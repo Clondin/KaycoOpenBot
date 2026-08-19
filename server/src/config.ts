@@ -45,6 +45,8 @@ export type DeploymentConfig = {
     google: { clientId: string; clientSecret: string };
     trustedOrigins: string[];
     initialAdminEmails: string[];
+    /** Allow the HTTPS API cookie to be used by an application hosted on a different site. */
+    crossSiteCookies: boolean;
   };
   /**
    * Local development only: admit everybody as a fixed administrator instead of requiring sign-in.
@@ -183,6 +185,15 @@ function commaSeparated(environment: Environment, name: string): string[] {
     .filter(Boolean);
 }
 
+function booleanFlag(environment: Environment, name: string): boolean {
+  const value = optional(environment, name);
+  if (!value) return false;
+  if (value !== "true" && value !== "false") {
+    throw new Error(`${name} must be true or false`);
+  }
+  return value === "true";
+}
+
 function trustedOrigins(environment: Environment): string[] {
   const configured = commaSeparated(environment, "TRUSTED_ORIGINS");
   if (configured.length === 0) {
@@ -226,8 +237,12 @@ function authConfig(
 ): DeploymentConfig["auth"] {
   const secret = optional(environment, "BETTER_AUTH_SECRET");
   const baseUrl = url(environment, "BETTER_AUTH_URL");
+  const crossSiteCookies = booleanFlag(
+    environment,
+    "BETTER_AUTH_CROSS_SITE_COOKIES",
+  );
   if (!google) {
-    if (secret || baseUrl) {
+    if (secret || baseUrl || crossSiteCookies) {
       throw new Error(
         "Google authentication requires GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET",
       );
@@ -243,6 +258,15 @@ function authConfig(
   if (!baseUrl) {
     throw new Error("Google authentication requires BETTER_AUTH_URL");
   }
+  if (
+    crossSiteCookies &&
+    (new URL(baseUrl).protocol !== "https:" ||
+      allowedOrigins.some((origin) => new URL(origin).protocol !== "https:"))
+  ) {
+    throw new Error(
+      "BETTER_AUTH_CROSS_SITE_COOKIES requires HTTPS for BETTER_AUTH_URL and every TRUSTED_ORIGINS entry",
+    );
+  }
 
   return {
     baseUrl,
@@ -250,6 +274,7 @@ function authConfig(
     google,
     trustedOrigins: allowedOrigins,
     initialAdminEmails: commaSeparated(environment, "INITIAL_ADMIN_EMAILS"),
+    crossSiteCookies,
   };
 }
 

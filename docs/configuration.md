@@ -50,6 +50,7 @@ All four Intelligence values are required together. Missing any of them stops se
 | `OPENBOT_DEV_NO_AUTH`        | Local-only fixed administrator when set to `true`. Refused with `NODE_ENV=production`. |
 | `GOOGLE_OAUTH_CLIENT_ID`     | Google OAuth client id.                                                                |
 | `GOOGLE_OAUTH_CLIENT_SECRET` | Google OAuth client secret.                                                            |
+| `BETTER_AUTH_CROSS_SITE_COOKIES` | Set `true` for HTTPS frontends hosted on a different site from the API.             |
 | `BETTER_AUTH_SECRET`         | At least 32 characters. Required with Google OAuth.                                    |
 | `BETTER_AUTH_URL`            | Public API server base URL. Required with Google OAuth.                                |
 | `TRUSTED_ORIGINS`            | Comma-separated app origins accepted by the API.                                       |

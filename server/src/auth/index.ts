@@ -29,6 +29,22 @@ export function createAuth(config: DeploymentConfig, database: Database) {
     socialProviders: {
       google: authConfig.google,
     },
+    onAPIError: {
+      // OAuth errors belong on the application sign-in screen, not at the API server's root.
+      errorURL: new URL("/sign", authConfig.trustedOrigins[0]).toString(),
+    },
+    ...(authConfig.crossSiteCookies
+      ? {
+          advanced: {
+            useSecureCookies: true,
+            defaultCookieAttributes: {
+              httpOnly: true,
+              secure: true,
+              sameSite: "none" as const,
+            },
+          },
+        }
+      : {}),
     databaseHooks: {
       user: {
         create: {

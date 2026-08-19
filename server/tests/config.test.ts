@@ -139,7 +139,39 @@ describe("deployment configuration", () => {
       },
       trustedOrigins: ["http://localhost:3000"],
       initialAdminEmails: ["admin@openbot.test", "owner@openbot.test"],
+      crossSiteCookies: false,
     });
+  });
+
+  test("enables secure cross-site cookies for a separately hosted frontend", () => {
+    const config = loadConfig({
+      ...baseEnvironment,
+      BETTER_AUTH_URL: "https://api.openbot.example",
+      TRUSTED_ORIGINS: "https://openbot.example",
+      BETTER_AUTH_CROSS_SITE_COOKIES: "true",
+    });
+
+    expect(config.auth?.crossSiteCookies).toBe(true);
+  });
+
+  test("refuses cross-site cookies over HTTP", () => {
+    expect(() =>
+      loadConfig({
+        ...baseEnvironment,
+        BETTER_AUTH_CROSS_SITE_COOKIES: "true",
+      }),
+    ).toThrow(
+      "BETTER_AUTH_CROSS_SITE_COOKIES requires HTTPS for BETTER_AUTH_URL and every TRUSTED_ORIGINS entry",
+    );
+  });
+
+  test("rejects a mistyped cross-site cookie flag", () => {
+    expect(() =>
+      loadConfig({
+        ...baseEnvironment,
+        BETTER_AUTH_CROSS_SITE_COOKIES: "yes",
+      }),
+    ).toThrow("BETTER_AUTH_CROSS_SITE_COOKIES must be true or false");
   });
 
   test("normalizes the browser origins used by CORS, auth, and WebSockets", () => {

@@ -112,6 +112,11 @@ The API allows credentialed requests only from `OPENBOT_APP_ORIGIN`; WebSocket u
 against the same allowlist. The browser never receives the model, Intelligence, database, computer,
 supervisor, or OAuth secrets. `VITE_OPENBOT_AUTH_PROVIDERS` contains display names only.
 
+When the Vercel hostname and API hostname are on different sites, set
+`BETTER_AUTH_CROSS_SITE_COOKIES=true` in `env.production`. It keeps cookies Secure and HttpOnly while
+allowing the OAuth state and session cookies to cross that HTTPS site boundary. Leave it false when
+the app and API use sibling hostnames under one organizational domain.
+
 ## Operate
 
 ```sh
