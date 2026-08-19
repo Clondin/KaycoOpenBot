@@ -14,8 +14,8 @@ import {
   rotateCredential,
 } from "../src/credentials";
 import { createDatabase } from "../src/db/client";
-import { TEST_POOL } from "./support/database";
 import { credentials } from "../src/db/schema";
+import { TEST_POOL } from "./support/database";
 import { testEnvironment } from "./support/environment";
 
 const key = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
@@ -185,6 +185,21 @@ describe("model credential resolution", () => {
         environment: { OPENAI_API_KEY: " environment-openai-key " },
       }),
     ).resolves.toBe("environment-openai-key");
+  });
+
+  test("uses the environment variable that belongs to the selected provider", async () => {
+    await expect(
+      resolveModelApiKey({
+        encryptionKey: key,
+        reader: { readModelSecret: async () => null },
+        provider: "xai",
+        keyId: "xai-api-key",
+        environment: {
+          OPENAI_API_KEY: "wrong-provider-key",
+          XAI_API_KEY: " xai-environment-key ",
+        },
+      }),
+    ).resolves.toBe("xai-environment-key");
   });
 
   test("returns null when neither credential source is configured", async () => {

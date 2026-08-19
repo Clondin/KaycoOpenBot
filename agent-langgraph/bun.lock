@@ -12,6 +12,7 @@
         "@langchain/google-genai": "^2.2.0",
         "@langchain/langgraph": "^1.4.10",
         "@langchain/openai": "^1.5.8",
+        "@langchain/xai": "^1.4.8",
       },
     },
   },
@@ -47,6 +48,8 @@
     "@langchain/openai": ["@langchain/openai@1.5.8", "", { "dependencies": { "js-tiktoken": "^1.0.12", "openai": "^6.41.0", "zod": "^3.25.76 || ^4" }, "peerDependencies": { "@langchain/core": "^1.2.8" } }, "sha512-BKzIgWYSXQ03V9F9u46vC12vZjHy8wyOt8H7VUrTWt6VdwSnnxXmjeEUEIkLjpU/bqVkGzHLXGCSMEHYbDSi5Q=="],
 
     "@langchain/protocol": ["@langchain/protocol@0.0.18", "", {}, "sha512-XW1egQtPfsGI41w2AMZNFZrUIwFSQHTjVMZs0OaTpCAvht/QLoaPN8FQcsysMVypOhupG28J29yOorrc70otBQ=="],
+
+    "@langchain/xai": ["@langchain/xai@1.4.8", "", { "dependencies": { "@langchain/openai": "1.5.8" }, "peerDependencies": { "@langchain/core": "^1.0.0" } }, "sha512-qaU0vxHrbwaPOYAYExpEoFBr5j7qyPjYI1n0C/P5kFHZ46xp/t5OAbjT2Q5MbWiJK5yeV+DMlYKJXz7R/w1sQw=="],
 
     "@protobuf-ts/protoc": ["@protobuf-ts/protoc@2.11.1", "", { "bin": { "protoc": "protoc.js" } }, "sha512-mUZJaV0daGO6HUX90o/atzQ6A7bbN2RSuHtdwo8SSF2Qoe3zHwa4IHyCN1evftTeHfLmdz+45qo47sL+5P8nyg=="],
 

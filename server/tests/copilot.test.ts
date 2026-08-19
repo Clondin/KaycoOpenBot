@@ -103,6 +103,47 @@ describe("registered Copilot agents", () => {
     });
   });
 
+  test("configures an xAI built-in agent with the native AI SDK provider", () => {
+    const configuration = builtInAgentConfiguration(
+      {
+        id: "general-assistant",
+        name: "General Assistant",
+        type: "built_in",
+        systemPrompt: "Be helpful.",
+      },
+      { provider: "xai", defaultModel: "grok-4.6" },
+      "xai-secret",
+    );
+
+    expect(configuration.prompt).toBe("Be helpful.");
+    expect(typeof configuration.model).toBe("object");
+    expect(configuration).not.toHaveProperty("apiKey");
+  });
+
+  test("names XAI_API_KEY when an xAI credential is missing", async () => {
+    const agents = buildAgents(
+      [
+        {
+          id: "general-assistant",
+          name: "General Assistant",
+          type: "built_in",
+          systemPrompt: "Be helpful.",
+        },
+      ],
+      { provider: "xai", defaultModel: "grok-4.6" },
+      null,
+    );
+    const consoleError = spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      await expect(agents["general-assistant"]?.runAgent()).rejects.toThrow(
+        "set XAI_API_KEY",
+      );
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
   test("fails an unavailable built-in agent through the AG-UI lifecycle", async () => {
     const agents = buildAgents(
       [

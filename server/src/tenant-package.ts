@@ -11,6 +11,7 @@ import {
   channels as channelTable,
   deploymentPackages,
 } from "./db/schema";
+import { isModelProvider, type ModelProvider } from "./model-provider";
 
 const approvedThemeVariables = new Set([
   "--background",
@@ -111,7 +112,7 @@ export type TenantPackage = {
   agents: TenantAgent[];
   channels: TenantChannel[];
   model: {
-    provider: "openai";
+    provider: ModelProvider;
     credentialSecretRef: string;
     defaultModel: string;
   };
@@ -302,8 +303,8 @@ export function validateTenantPackage(files: PackageFiles): TenantPackage {
     },
   );
   const model = asRecord(modelYaml.model, "model");
-  if (model.provider !== "openai") {
-    throw new Error("model.provider must be openai");
+  if (!isModelProvider(model.provider)) {
+    throw new Error("model.provider must be openai, anthropic, google or xai");
   }
   const sources = asList(knowledgeYaml.sources, "knowledge.yaml sources").map(
     (value) => {
@@ -330,7 +331,7 @@ export function validateTenantPackage(files: PackageFiles): TenantPackage {
     agents,
     channels,
     model: {
-      provider: "openai",
+      provider: model.provider,
       credentialSecretRef: requiredString(
         model.credential_secret_ref,
         "model.credential_secret_ref",

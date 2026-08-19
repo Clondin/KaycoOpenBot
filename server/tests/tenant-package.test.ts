@@ -2,7 +2,6 @@ import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { createDatabase } from "../src/db/client";
-import { TEST_POOL } from "./support/database";
 import {
   agentProfiles,
   agents,
@@ -18,6 +17,7 @@ import {
   validateTenantPackage,
   validateThemeCss,
 } from "../src/tenant-package";
+import { TEST_POOL } from "./support/database";
 
 const database = createDatabase(
   process.env.DATABASE_URL ??
@@ -232,6 +232,38 @@ describe("tenant YAML validation", () => {
       },
       auth: { providers: ["google"] },
     });
+  });
+
+  test("accepts xAI as a model provider", () => {
+    const tenantPackage = validateTenantPackage({
+      brand: "tenant: { id: fintech, product_name: Ledgerline }",
+      agents: "agents: []",
+      channels: "channels: []",
+      model:
+        "model: { provider: xai, credential_secret_ref: xai-key, default_model: grok-4.6 }",
+      knowledge: "sources: []",
+      themeCss: "",
+    });
+
+    expect(tenantPackage.model).toEqual({
+      provider: "xai",
+      credentialSecretRef: "xai-key",
+      defaultModel: "grok-4.6",
+    });
+  });
+
+  test("rejects an unsupported model provider", () => {
+    expect(() =>
+      validateTenantPackage({
+        brand: "tenant: { id: fintech, product_name: Ledgerline }",
+        agents: "agents: []",
+        channels: "channels: []",
+        model:
+          "model: { provider: unsupported, credential_secret_ref: key, default_model: model }",
+        knowledge: "sources: []",
+        themeCss: "",
+      }),
+    ).toThrow("model.provider must be openai, anthropic, google or xai");
   });
 
   test("loads the mounted fintech package without a theme file", async () => {

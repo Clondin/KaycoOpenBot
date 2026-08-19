@@ -16,6 +16,7 @@ import {
   StateGraph,
 } from "@langchain/langgraph";
 import { ChatOpenAI } from "@langchain/openai";
+import { ChatXAI } from "@langchain/xai";
 import { serve } from "bun";
 import { SYSTEM_PROMPT } from "../../shared/bot-prompt";
 
@@ -62,6 +63,7 @@ const USE_RESPONSES_API = process.env.BOT_RESPONSES_API === "true";
 function defaultModelFor(provider: string): string {
   if (provider === "anthropic") return "claude-sonnet-4-5";
   if (provider === "google") return "gemini-2.5-flash";
+  if (provider === "xai") return "grok-4.6";
   return "gpt-5.5";
 }
 
@@ -76,12 +78,13 @@ const KEY_VARIABLE: Record<string, string> = {
   openai: "OPENAI_API_KEY",
   anthropic: "ANTHROPIC_API_KEY",
   google: "GOOGLE_API_KEY",
+  xai: "XAI_API_KEY",
 };
 
 const keyVariable = KEY_VARIABLE[PROVIDER];
 if (!keyVariable) {
   console.error(
-    `BOT_PROVIDER=${PROVIDER} is not one this Bot knows. Use openai, anthropic or google.`,
+    `BOT_PROVIDER=${PROVIDER} is not one this Bot knows. Use openai, anthropic, google or xai.`,
   );
   process.exit(1);
 }
@@ -181,6 +184,13 @@ function buildModel() {
   }
   if (PROVIDER === "google") {
     return new ChatGoogleGenerativeAI({
+      model: MODEL,
+      apiKey: API_KEY,
+      streaming: true,
+    });
+  }
+  if (PROVIDER === "xai") {
+    return new ChatXAI({
       model: MODEL,
       apiKey: API_KEY,
       streaming: true,

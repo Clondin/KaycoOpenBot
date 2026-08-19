@@ -2,6 +2,10 @@ import { and, desc, eq, isNull } from "drizzle-orm";
 import { type AuditStore, recordAuditEvent } from "./audit";
 import type { Database } from "./db/client";
 import { credentials } from "./db/schema";
+import {
+  type ModelProvider,
+  modelApiKeyEnvironmentVariable,
+} from "./model-provider";
 
 type CredentialEnvelope = {
   version: 1;
@@ -52,7 +56,7 @@ export type CredentialStatusReader = {
 
 export type ModelCredentialSecretReader = {
   readModelSecret: (input: {
-    provider: "openai";
+    provider: ModelProvider;
     keyId: string;
   }) => Promise<{ encryptedValue: string } | null>;
 };
@@ -134,7 +138,7 @@ export async function decryptCredentialForUse(
 export async function resolveModelApiKey(input: {
   encryptionKey: string;
   reader: ModelCredentialSecretReader;
-  provider: "openai";
+  provider: ModelProvider;
   keyId: string;
   environment: Record<string, string | undefined>;
 }) {
@@ -146,7 +150,8 @@ export async function resolveModelApiKey(input: {
     return decryptSecret(input.encryptionKey, stored.encryptedValue);
   }
 
-  const environmentKey = input.environment.OPENAI_API_KEY?.trim();
+  const environmentKey =
+    input.environment[modelApiKeyEnvironmentVariable(input.provider)]?.trim();
   return environmentKey || null;
 }
 

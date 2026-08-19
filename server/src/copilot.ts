@@ -1,4 +1,5 @@
 import { AbstractAgent, HttpAgent } from "@ag-ui/client";
+import { createXai } from "@ai-sdk/xai";
 import type { BuiltInAgentConfiguration } from "@copilotkit/runtime/v2";
 import {
   BuiltInAgent,
@@ -8,6 +9,10 @@ import {
 import { createCopilotHonoHandler } from "@copilotkit/runtime/v2/hono";
 import type { AgentActor } from "./agents/profile-types";
 import type { DeploymentConfig } from "./config";
+import {
+  type ModelProvider,
+  modelApiKeyEnvironmentVariable,
+} from "./model-provider";
 
 /**
  * The CopilotKit runtime, always in Intelligence mode.
@@ -97,7 +102,7 @@ export function standingRoleMessage(
 }
 
 export type RuntimeModel = {
-  provider: "openai";
+  provider: ModelProvider;
   defaultModel: string;
 };
 
@@ -165,14 +170,23 @@ export function builtInAgentConfiguration(
   apiKey: string | null,
 ): BuiltInAgentConfiguration {
   if (!apiKey) {
+    const environmentVariable = modelApiKeyEnvironmentVariable(model.provider);
     return {
       type: "custom",
       // biome-ignore lint/correctness/useYield: this agent must fail when iteration starts.
       factory: async function* () {
         throw new Error(
-          `Model credential is not configured for ${agent.name}. Add the package credential or set OPENAI_API_KEY.`,
+          `Model credential is not configured for ${agent.name}. Add the package credential or set ${environmentVariable}.`,
         );
       },
+    };
+  }
+
+  if (model.provider === "xai") {
+    const xai = createXai({ apiKey });
+    return {
+      model: xai(model.defaultModel),
+      prompt: agent.systemPrompt,
     };
   }
 

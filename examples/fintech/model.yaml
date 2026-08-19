@@ -1,4 +1,4 @@
 model:
-  provider: openai
-  credential_secret_ref: openai-api-key
-  default_model: gpt-4.1
+  provider: xai
+  credential_secret_ref: xai-api-key
+  default_model: grok-4.6
