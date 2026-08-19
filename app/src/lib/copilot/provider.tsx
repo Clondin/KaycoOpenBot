@@ -1,5 +1,6 @@
 import { CopilotKitProvider } from "@copilotkit/react-core/v2";
 import type { ReactNode } from "react";
+import { deploymentPreviewEnabled } from "../deployment-preview";
 import { ActiveBotProvider } from "./active-bot";
 import { ComputerTools } from "./computer-tools";
 import { GalleryTools } from "./gallery-tools";
@@ -21,6 +22,10 @@ import { SandboxedTools } from "./sandboxed-tools";
  * runtime rather than returning it).
  */
 export function CopilotProvider({ children }: { children: ReactNode }) {
+  // The hosted design preview is deliberately disconnected from the runtime. Keeping the real
+  // provider out of that build also keeps it from probing an API that does not exist yet.
+  if (deploymentPreviewEnabled) return children;
+
   return (
     <CopilotKitProvider runtimeUrl="/api/copilotkit" credentials="include">
       {/* Computer tools target the Bot declared by the mounted surface. */}

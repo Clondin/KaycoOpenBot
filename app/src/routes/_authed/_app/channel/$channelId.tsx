@@ -7,12 +7,14 @@ import { z } from "zod";
 import { AgentProfile } from "@/components/agents/agent-profile";
 import { ChannelAvatar } from "@/components/channels/avatar";
 import { ChannelChat } from "@/components/channels/channel-chat";
+import { DeploymentPreviewChat } from "@/components/channels/deployment-preview-chat";
 import { ComputerView } from "@/components/computer/computer-view";
 import { useNeedsYou } from "@/components/computer/needs-you";
 import { DetailPanel } from "@/components/layout/detail-panel";
 import { Button } from "@/components/ui/button";
 import { type AgentChannel, channelQueryOptions } from "@/lib/channels/queries";
 import { onComputerActivity } from "@/lib/copilot/computer-activity";
+import { deploymentPreviewEnabled } from "@/lib/deployment-preview";
 
 const chatSearchSchema = z.object({
   settings: z.boolean().optional(),
@@ -63,7 +65,10 @@ function RouteComponent() {
   /** Channel routing currently supports one coworker. */
   const agentId = channel.data?.agentIds[0];
   /** Needs-you state is rendered by the screen when the screen is already open. */
-  const needsYou = useNeedsYou(agentId, !isWatching);
+  const needsYou = useNeedsYou(
+    agentId,
+    !deploymentPreviewEnabled && !isWatching,
+  );
 
   // Needs-you prompts auto-open the screen because the actionable prompt is rendered there.
   useEffect(() => {
@@ -160,13 +165,15 @@ function RouteComponent() {
           <div className="flex flex-row gap-1.5">
             <Button
               aria-label={
-                needsYou
-                  ? "This Bot is waiting for you. Open its screen"
-                  : "Watch this Bot's screen"
+                deploymentPreviewEnabled
+                  ? "Screen unavailable in UI preview"
+                  : needsYou
+                    ? "This Bot is waiting for you. Open its screen"
+                    : "Watch this Bot's screen"
               }
               aria-pressed={isWatching}
               className={`relative ${isWatching ? "bg-foreground/5" : ""}`}
-              disabled={agentId === undefined}
+              disabled={deploymentPreviewEnabled || agentId === undefined}
               onClick={() => show(isWatching ? null : "watch")}
               variant="ghost"
               size="icon"
@@ -234,6 +241,10 @@ function ChannelBody({
         This channel has more than one coworker, which is not supported yet.
       </p>
     );
+  }
+
+  if (deploymentPreviewEnabled) {
+    return <DeploymentPreviewChat channel={channel} />;
   }
 
   // Remount on channel changes so CopilotKit agent/thread state cannot leak between channels.
