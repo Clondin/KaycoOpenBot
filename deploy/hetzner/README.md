@@ -105,11 +105,12 @@ Set these Vercel production environment variables and redeploy the frontend:
 ```text
 VITE_OPENBOT_PREVIEW=false
 VITE_OPENBOT_API_URL=https://api.openbot.example.com
+VITE_OPENBOT_AUTH_PROVIDERS=google
 ```
 
 The API allows credentialed requests only from `OPENBOT_APP_ORIGIN`; WebSocket upgrades are checked
 against the same allowlist. The browser never receives the model, Intelligence, database, computer,
-or supervisor secrets.
+supervisor, or OAuth secrets. `VITE_OPENBOT_AUTH_PROVIDERS` contains display names only.
 
 ## Operate
 

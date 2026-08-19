@@ -4,6 +4,7 @@ import {
   createApplicationConfiguration,
   loadTenantPackage,
 } from "../server/src/tenant-package";
+import { applicationAuthProviders } from "./auth-providers";
 
 const projectRoot = resolve(import.meta.dir, "..");
 const configuredTenantPackageDirectory = process.env.TENANT_PACKAGE_DIR;
@@ -13,13 +14,7 @@ const tenantPackageDirectory = configuredTenantPackageDirectory
     : resolve(projectRoot, "server", configuredTenantPackageDirectory)
   : resolve(projectRoot, "examples/fintech");
 const tenantPackage = await loadTenantPackage(tenantPackageDirectory);
-const providers =
-  process.env.GOOGLE_OAUTH_CLIENT_ID?.trim() &&
-  process.env.GOOGLE_OAUTH_CLIENT_SECRET?.trim() &&
-  process.env.BETTER_AUTH_SECRET?.trim() &&
-  process.env.BETTER_AUTH_URL?.trim()
-    ? ["google"]
-    : [];
+const providers = applicationAuthProviders();
 const applicationConfiguration = createApplicationConfiguration(
   tenantPackage,
   providers,
