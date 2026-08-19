@@ -1,0 +1,41 @@
+# Resource overlay for a 4 GB, three-shared-vCPU test server.
+# Use together with compose.yaml; it is intentionally limited to one running Bot computer.
+services:
+  caddy:
+    mem_limit: 128m
+    cpus: 0.25
+
+  postgres:
+    command:
+      - postgres
+      - -c
+      - shared_buffers=128MB
+      - -c
+      - work_mem=4MB
+      - -c
+      - maintenance_work_mem=64MB
+      - -c
+      - max_connections=25
+    mem_limit: 640m
+    cpus: 0.5
+
+  migrate:
+    mem_limit: 640m
+    cpus: 0.5
+
+  server:
+    mem_limit: 1g
+    cpus: 0.75
+
+  agent-langgraph:
+    mem_limit: 512m
+    cpus: 0.5
+
+  supervisor:
+    environment:
+      COMPUTER_MEMORY_BYTES: 2147483648
+      COMPUTER_NANO_CPUS: 1000000000
+      COMPUTER_PIDS_LIMIT: 512
+      COMPUTER_MAX_RUNNING: 1
+    mem_limit: 256m
+    cpus: 0.25

@@ -1,5 +1,6 @@
 import { serve } from "bun";
 import { Hono } from "hono";
+import { hasComputerCapacity } from "./capacity";
 import {
   DockerUnavailableError,
   ensure,
@@ -52,7 +53,20 @@ const memoryBytes = optionalPositiveInteger(
 );
 const nanoCpus = optionalPositiveInteger(process.env, "COMPUTER_NANO_CPUS");
 const pidsLimit = optionalPositiveInteger(process.env, "COMPUTER_PIDS_LIMIT");
+const maxRunning = optionalPositiveInteger(process.env, "COMPUTER_MAX_RUNNING");
 const spireSocketVolume = process.env.SPIRE_AGENT_SOCKET_VOLUME;
+
+/** Serialize capacity decisions so two simultaneous requests cannot both take the last slot. */
+let capacityQueue: Promise<void> = Promise.resolve();
+
+function withCapacityLock<T>(operation: () => Promise<T>): Promise<T> {
+  const result = capacityQueue.then(operation, operation);
+  capacityQueue = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  return result;
+}
 
 /**
  * What a computer is told about itself.
@@ -112,20 +126,43 @@ app.post("/computers/:botId/ensure", async (context) => {
   if (!parsed.ok) return context.json({ error: parsed.reason }, 400);
 
   try {
-    // Registered before the computer is handed out, so it can prove which Bot it is from its first
-    // request.
-    const identity = await registerEntry(parsed.names);
+    const provision = async () => {
+      if (
+        maxRunning &&
+        !hasComputerCapacity(parsed.names.botId, await listOwned(), maxRunning)
+      ) {
+        return null;
+      }
 
-    const state = await ensure(parsed.names, {
-      image,
-      environment: environmentFor(parsed.names.botId),
-      ...(network ? { network } : {}),
-      ...(runtime ? { runtime } : {}),
-      ...(memoryBytes ? { memoryBytes } : {}),
-      ...(nanoCpus ? { nanoCpus } : {}),
-      ...(pidsLimit ? { pidsLimit } : {}),
-      ...(spireSocketVolume ? { spireSocketVolume } : {}),
-    });
+      // Registered before the computer is handed out, so it can prove which Bot it is from its first
+      // request.
+      const identity = await registerEntry(parsed.names);
+      const state = await ensure(parsed.names, {
+        image,
+        environment: environmentFor(parsed.names.botId),
+        ...(network ? { network } : {}),
+        ...(runtime ? { runtime } : {}),
+        ...(memoryBytes ? { memoryBytes } : {}),
+        ...(nanoCpus ? { nanoCpus } : {}),
+        ...(pidsLimit ? { pidsLimit } : {}),
+        ...(spireSocketVolume ? { spireSocketVolume } : {}),
+      });
+      return { identity, state };
+    };
+
+    const provisioned = maxRunning
+      ? await withCapacityLock(provision)
+      : await provision();
+    if (!provisioned) {
+      return context.json(
+        {
+          error: `This host allows ${maxRunning} running Bot ${maxRunning === 1 ? "computer" : "computers"}. Stop an active computer before starting another.`,
+        },
+        429,
+      );
+    }
+
+    const { identity, state } = provisioned;
     return context.json({
       ...state,
       ...(identity.registered

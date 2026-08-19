@@ -15,6 +15,15 @@ describe("computer resource limits", () => {
     expect(optionalPositiveInteger({}, "COMPUTER_NANO_CPUS")).toBeUndefined();
   });
 
+  test("accepts a one-computer test-host limit", () => {
+    expect(
+      optionalPositiveInteger(
+        { COMPUTER_MAX_RUNNING: "1" },
+        "COMPUTER_MAX_RUNNING",
+      ),
+    ).toBe(1);
+  });
+
   test.each(["0", "-1", "1.5", "not-a-number"])(
     "rejects invalid limit %s",
     (value) => {

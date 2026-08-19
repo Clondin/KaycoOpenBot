@@ -13,12 +13,30 @@ and every Bot computer stay on a private Docker network.
 - The default resource budget gives each active Bot computer 3 GB RAM, 1.5 CPU cores, and 512
   processes. A 32 GB host has practical headroom for roughly 6-8 simultaneously active browser
   computers plus PostgreSQL and the platform services. If expected browser concurrency exceeds
-  that, use a 64 GB dedicated-CPU server or split the computer supervisor onto worker hosts.
+that, use a 64 GB dedicated-CPU server or split the computer supervisor onto worker hosts.
 - Point a DNS `A` record such as `api.openbot.example.com` to the new server.
 - Give the Vercel app a sibling custom domain such as `openbot.example.com`. Keeping the app and API
   under the same registrable domain avoids third-party-cookie restrictions.
 - Allow inbound TCP 22, 80, and 443 and UDP 443 in the Hetzner Cloud Firewall. Do not expose ports
-  3001, 4201, 4300, 5432, or any Bot-computer port.
+3001, 4201, 4300, 5432, or any Bot-computer port.
+
+### Single-user test profile (~$40/month)
+
+For one-person testing, a new Ashburn `cpx21` (3 shared vCPUs, 4 GB RAM, 80 GB disk) can run the same
+stack with `compose.single-user.yaml`. Configure 4 GB of swap during provisioning. Swap protects
+image builds and brief memory spikes; it does not make the server perform like an 8 GB host.
+
+The overlay caps the platform services and gives the browser computer 2 GB RAM and one CPU. It also
+enforces a maximum of one running Bot computer. Multiple Bot profiles can remain saved, but one must
+be stopped before another can start.
+
+Expected impact compared with the 32 GB organization profile:
+
+- one active tester and one active browser Bot, not a team using several Bots concurrently;
+- slower Docker builds, cold starts, page rendering, and large model/tool responses;
+- greater risk of browser or server restarts on heavy pages and large file operations;
+- shared-vCPU performance can vary with host load;
+- the same authentication, database, agents, audit, policy, TLS, and Vercel integration remain.
 
 ## Configure
 
@@ -64,6 +82,20 @@ Caddy obtains and renews TLS automatically. Verify the public boundary:
 
 ```sh
 curl --fail https://api.openbot.example.com/health
+```
+
+On the 4 GB single-user server, add the overlay to both build and start commands:
+
+```sh
+docker compose --env-file deploy/hetzner/env.production \
+  -f deploy/hetzner/compose.yaml \
+  -f deploy/hetzner/compose.single-user.yaml \
+  --profile images build agent-computer-image
+
+docker compose --env-file deploy/hetzner/env.production \
+  -f deploy/hetzner/compose.yaml \
+  -f deploy/hetzner/compose.single-user.yaml \
+  up -d --build
 ```
 
 ## Connect Vercel
