@@ -1,5 +1,6 @@
 import type { Hono as HonoApp, MiddlewareHandler } from "hono";
 import { Hono } from "hono";
+import { cors } from "hono/cors";
 import type { AgentProfileStore } from "./agents/profile-store";
 import { createAgentRoutes } from "./agents/routes";
 import { type AuditReader, type AuditStore, auditQueryFromUrl } from "./audit";
@@ -97,6 +98,23 @@ export function createApp(
   threadIdentity?: ThreadIdentity,
 ) {
   const app = new Hono<{ Variables: AppVariables }>();
+
+  app.use(
+    "/api/*",
+    cors({
+      origin: config.trustedOrigins,
+      credentials: true,
+      allowMethods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"],
+      allowHeaders: [
+        "Content-Type",
+        "Authorization",
+        "X-CopilotCloud-Public-Api-Key",
+        "X-CopilotKit-Runtime-Client-GQL-Version",
+      ],
+      exposeHeaders: ["X-CopilotKit-Runtime-Version"],
+      maxAge: 86_400,
+    }),
+  );
 
   app.get("/health", (context) => context.json({ status: "ok" }));
   // Projected, never the raw runtime. config.runtime carries the Intelligence contract, including

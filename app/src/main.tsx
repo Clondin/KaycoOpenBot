@@ -2,12 +2,14 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { RouterProvider } from "@tanstack/react-router";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
+import { installApiOrigin } from "./lib/api-origin";
 import { installDeploymentPreviewApi } from "./lib/deployment-preview";
 import { queryClient } from "./query-client";
 import { router } from "./router";
 import "@copilotkit/react-core/v2/styles.css";
 import "./styles.css";
 
+installApiOrigin();
 installDeploymentPreviewApi();
 
 const rootElement = document.getElementById("root");

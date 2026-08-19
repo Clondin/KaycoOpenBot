@@ -142,6 +142,37 @@ describe("deployment configuration", () => {
     });
   });
 
+  test("normalizes the browser origins used by CORS, auth, and WebSockets", () => {
+    const config = loadConfig({
+      ...baseEnvironment,
+      TRUSTED_ORIGINS: "https://openbot.example.com/, http://localhost:3010",
+    });
+
+    expect(config.trustedOrigins).toEqual([
+      "https://openbot.example.com",
+      "http://localhost:3010",
+    ]);
+    expect(config.auth?.trustedOrigins).toEqual(config.trustedOrigins);
+  });
+
+  test("requires explicit trusted browser origins in production", () => {
+    expect(() =>
+      loadConfig({
+        ...baseEnvironment,
+        NODE_ENV: "production",
+      }),
+    ).toThrow("TRUSTED_ORIGINS must be configured in production");
+  });
+
+  test("rejects trusted origins that include a path", () => {
+    expect(() =>
+      loadConfig({
+        ...baseEnvironment,
+        TRUSTED_ORIGINS: "https://openbot.example.com/app",
+      }),
+    ).toThrow("TRUSTED_ORIGINS must contain HTTP(S) origins without paths");
+  });
+
   test("rejects incomplete Google authentication deployment settings", () => {
     expect(() =>
       loadConfig({

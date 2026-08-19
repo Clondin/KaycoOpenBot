@@ -1,5 +1,6 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
+import { apiWebSocketUrl } from "../api-origin";
 import { deploymentPreviewEnabled } from "../deployment-preview";
 import { type ChannelSummary, channelKeys } from "./queries";
 
@@ -21,9 +22,7 @@ const FIRST_RETRY_MS = 500;
 const MAX_RETRY_MS = 30_000;
 
 function socketUrl() {
-  const url = new URL("/api/channels/events", window.location.href);
-  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-  return url.toString();
+  return apiWebSocketUrl("/api/channels/events");
 }
 
 export function useChannelEvents() {

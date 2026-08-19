@@ -10,6 +10,7 @@ import {
 } from "./docker";
 import { registerEntry } from "./identity";
 import { namesFor } from "./names";
+import { optionalPositiveInteger } from "./resources";
 
 /**
  * The container supervisor: the only thing here that holds the Docker socket.
@@ -45,9 +46,12 @@ if (!token) {
 const image = process.env.COMPUTER_IMAGE ?? "openbot-agent-computer:latest";
 const network = process.env.COMPUTER_NETWORK;
 const runtime = process.env.COMPUTER_RUNTIME;
-const memoryBytes = process.env.COMPUTER_MEMORY_BYTES
-  ? Number.parseInt(process.env.COMPUTER_MEMORY_BYTES, 10)
-  : undefined;
+const memoryBytes = optionalPositiveInteger(
+  process.env,
+  "COMPUTER_MEMORY_BYTES",
+);
+const nanoCpus = optionalPositiveInteger(process.env, "COMPUTER_NANO_CPUS");
+const pidsLimit = optionalPositiveInteger(process.env, "COMPUTER_PIDS_LIMIT");
 const spireSocketVolume = process.env.SPIRE_AGENT_SOCKET_VOLUME;
 
 /**
@@ -118,6 +122,8 @@ app.post("/computers/:botId/ensure", async (context) => {
       ...(network ? { network } : {}),
       ...(runtime ? { runtime } : {}),
       ...(memoryBytes ? { memoryBytes } : {}),
+      ...(nanoCpus ? { nanoCpus } : {}),
+      ...(pidsLimit ? { pidsLimit } : {}),
       ...(spireSocketVolume ? { spireSocketVolume } : {}),
     });
     return context.json({

@@ -43,6 +43,61 @@ describe("runtime capabilities", () => {
   });
 });
 
+describe("browser origin boundary", () => {
+  const corsApp = createApp(
+    loadConfig({
+      ...testEnvironment(),
+      TRUSTED_ORIGINS: "https://openbot.example.com",
+    }),
+  );
+
+  test("allows credentialed API requests from the configured app", async () => {
+    const response = await corsApp.request(
+      "http://openbot.local/api/capabilities",
+      { headers: { Origin: "https://openbot.example.com" } },
+    );
+
+    expect(response.headers.get("access-control-allow-origin")).toBe(
+      "https://openbot.example.com",
+    );
+    expect(response.headers.get("access-control-allow-credentials")).toBe(
+      "true",
+    );
+  });
+
+  test("does not authorize an unconfigured browser origin", async () => {
+    const response = await corsApp.request(
+      "http://openbot.local/api/capabilities",
+      { headers: { Origin: "https://attacker.example" } },
+    );
+
+    expect(response.headers.get("access-control-allow-origin")).toBeNull();
+  });
+
+  test("preflights the headers used by the CopilotKit browser client", async () => {
+    const response = await corsApp.request(
+      "http://openbot.local/api/copilotkit",
+      {
+        method: "OPTIONS",
+        headers: {
+          Origin: "https://openbot.example.com",
+          "Access-Control-Request-Method": "POST",
+          "Access-Control-Request-Headers":
+            "content-type,x-copilotcloud-public-api-key,x-copilotkit-runtime-client-gql-version",
+        },
+      },
+    );
+
+    expect(response.status).toBe(204);
+    expect(response.headers.get("access-control-allow-headers")).toContain(
+      "X-CopilotKit-Runtime-Client-GQL-Version",
+    );
+    expect(response.headers.get("access-control-expose-headers")).toBe(
+      "X-CopilotKit-Runtime-Version",
+    );
+  });
+});
+
 describe("authentication availability", () => {
   test("fails loudly when Google authentication has not been configured", async () => {
     const response = await app.request(

@@ -25,6 +25,8 @@ export type DeploymentConfig = {
   databaseUrl: string;
   keyEncryptionKey: string;
   managedAgentAgUiUrl: URL;
+  /** Browser application origins allowed to make credentialed HTTP and WebSocket requests. */
+  trustedOrigins: string[];
   /**
    * What this deployment calls itself, when more than one shares an Intelligence project.
    *
@@ -181,9 +183,46 @@ function commaSeparated(environment: Environment, name: string): string[] {
     .filter(Boolean);
 }
 
+function trustedOrigins(environment: Environment): string[] {
+  const configured = commaSeparated(environment, "TRUSTED_ORIGINS");
+  if (configured.length === 0) {
+    if (environment.NODE_ENV === "production") {
+      throw new Error("TRUSTED_ORIGINS must be configured in production");
+    }
+    return ["http://localhost:3000"];
+  }
+
+  return [
+    ...new Set(
+      configured.map((value) => {
+        let parsed: URL;
+        try {
+          parsed = new URL(value);
+        } catch {
+          throw new Error(
+            `TRUSTED_ORIGINS contains an invalid origin: ${value}`,
+          );
+        }
+        if (
+          (parsed.protocol !== "http:" && parsed.protocol !== "https:") ||
+          parsed.pathname !== "/" ||
+          parsed.search.length > 0 ||
+          parsed.hash.length > 0
+        ) {
+          throw new Error(
+            `TRUSTED_ORIGINS must contain HTTP(S) origins without paths: ${value}`,
+          );
+        }
+        return parsed.origin;
+      }),
+    ),
+  ];
+}
+
 function authConfig(
   environment: Environment,
   google: { clientId: string; clientSecret: string } | undefined,
+  allowedOrigins: string[],
 ): DeploymentConfig["auth"] {
   const secret = optional(environment, "BETTER_AUTH_SECRET");
   const baseUrl = url(environment, "BETTER_AUTH_URL");
@@ -209,9 +248,7 @@ function authConfig(
     baseUrl,
     secret,
     google,
-    trustedOrigins: commaSeparated(environment, "TRUSTED_ORIGINS").length
-      ? commaSeparated(environment, "TRUSTED_ORIGINS")
-      : ["http://localhost:3000"],
+    trustedOrigins: allowedOrigins,
     initialAdminEmails: commaSeparated(environment, "INITIAL_ADMIN_EMAILS"),
   };
 }
@@ -318,10 +355,12 @@ export function loadConfig(
   environment: Environment = process.env,
 ): DeploymentConfig {
   const google = oauthClient(environment, "GOOGLE");
+  const allowedOrigins = trustedOrigins(environment);
 
   return {
     databaseUrl: required(environment, "DATABASE_URL"),
     keyEncryptionKey: keyEncryptionKey(environment),
+    trustedOrigins: allowedOrigins,
     managedAgentAgUiUrl: requiredHttpUrl(
       environment,
       "MANAGED_AGENT_AG_UI_URL",
@@ -331,7 +370,7 @@ export function loadConfig(
       optional(environment, "TENANT_PACKAGE_DIR") ?? "../examples/fintech",
     runtime: runtimeCapabilities(environment),
     oauth: { google },
-    auth: authConfig(environment, google),
+    auth: authConfig(environment, google, allowedOrigins),
     devNoAuth: devAuthEnabled(environment),
     computer: computerConfig(environment),
   };

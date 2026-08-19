@@ -1,0 +1,182 @@
+name: openbot
+
+services:
+  caddy:
+    image: caddy:2.10.2-alpine
+    restart: unless-stopped
+    environment:
+      OPENBOT_API_HOST: ${OPENBOT_API_HOST:?Set OPENBOT_API_HOST in env.production}
+      TLS_EMAIL: ${TLS_EMAIL:?Set TLS_EMAIL in env.production}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks:
+      - edge
+      - backend
+    depends_on:
+      server:
+        condition: service_healthy
+
+  postgres:
+    image: pgvector/pgvector:pg17
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: openbot
+      POSTGRES_USER: openbot
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in env.production}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U openbot -d openbot"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    shm_size: 256mb
+
+  migrate:
+    image: openbot-server:${OPENBOT_IMAGE_TAG:-local}
+    build:
+      context: ../..
+      dockerfile: server/Dockerfile
+    command: ["bun", "x", "drizzle-kit", "migrate", "--config=drizzle.config.ts"]
+    restart: "no"
+    environment:
+      DATABASE_URL: postgres://openbot:${POSTGRES_PASSWORD}@postgres:5432/openbot
+    networks:
+      - backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  server:
+    image: openbot-server:${OPENBOT_IMAGE_TAG:-local}
+    build:
+      context: ../..
+      dockerfile: server/Dockerfile
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: "3001"
+      DATABASE_URL: postgres://openbot:${POSTGRES_PASSWORD}@postgres:5432/openbot
+      KEY_ENCRYPTION_KEY: ${KEY_ENCRYPTION_KEY:?Set KEY_ENCRYPTION_KEY in env.production}
+      TENANT_PACKAGE_DIR: ${TENANT_PACKAGE_DIR:-../examples/fintech}
+      DEPLOYMENT_ID: ${DEPLOYMENT_ID:-openbot-production}
+      BETTER_AUTH_URL: https://${OPENBOT_API_HOST}
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?Set BETTER_AUTH_SECRET in env.production}
+      GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:?Set GOOGLE_OAUTH_CLIENT_ID in env.production}
+      GOOGLE_OAUTH_CLIENT_SECRET: ${GOOGLE_OAUTH_CLIENT_SECRET:?Set GOOGLE_OAUTH_CLIENT_SECRET in env.production}
+      TRUSTED_ORIGINS: ${OPENBOT_APP_ORIGIN:?Set OPENBOT_APP_ORIGIN in env.production}
+      INITIAL_ADMIN_EMAILS: ${INITIAL_ADMIN_EMAILS:?Set INITIAL_ADMIN_EMAILS in env.production}
+      INTELLIGENCE_API_URL: ${INTELLIGENCE_API_URL:-https://api.intelligence.copilotkit.ai}
+      INTELLIGENCE_GATEWAY_WS_URL: ${INTELLIGENCE_GATEWAY_WS_URL:-wss://realtime.intelligence.copilotkit.ai}
+      INTELLIGENCE_API_KEY: ${INTELLIGENCE_API_KEY:?Set INTELLIGENCE_API_KEY in env.production}
+      COPILOTKIT_LICENSE_TOKEN: ${COPILOTKIT_LICENSE_TOKEN:?Set COPILOTKIT_LICENSE_TOKEN in env.production}
+      MANAGED_AGENT_AG_UI_URL: http://agent-langgraph:4201/ag-ui
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      AGENT_COMPUTER_URL: http://agent-computer:4100
+      COMPUTER_TOKEN: ${COMPUTER_TOKEN:?Set COMPUTER_TOKEN in env.production}
+      COMPUTER_SUPERVISOR_URL: http://supervisor:4300
+      SUPERVISOR_TOKEN: ${SUPERVISOR_TOKEN:?Set SUPERVISOR_TOKEN in env.production}
+      AGENT_COMPUTER_POLICY: ${AGENT_COMPUTER_POLICY:-}
+    expose:
+      - "3001"
+    networks:
+      - backend
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      agent-langgraph:
+        condition: service_healthy
+      supervisor:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "bun -e \"const r = await fetch('http://localhost:3001/health'); process.exit(r.ok ? 0 : 1)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  agent-langgraph:
+    image: openbot-agent-langgraph:${OPENBOT_IMAGE_TAG:-local}
+    build:
+      context: ../..
+      dockerfile: agent-langgraph/Dockerfile
+    restart: unless-stopped
+    environment:
+      PORT: "4201"
+      BOT_PROVIDER: ${BOT_PROVIDER:-openai}
+      BOT_MODEL: ${BOT_MODEL:-}
+      BOT_RESPONSES_API: ${BOT_RESPONSES_API:-false}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+    expose:
+      - "4201"
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "bun -e \"const r = await fetch('http://localhost:4201/health'); process.exit(r.ok ? 0 : 1)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  supervisor:
+    image: openbot-supervisor:${OPENBOT_IMAGE_TAG:-local}
+    build:
+      context: ../..
+      dockerfile: supervisor/Dockerfile
+    restart: unless-stopped
+    environment:
+      PORT: "4300"
+      SUPERVISOR_TOKEN: ${SUPERVISOR_TOKEN:?Set SUPERVISOR_TOKEN in env.production}
+      COMPUTER_TOKEN: ${COMPUTER_TOKEN:?Set COMPUTER_TOKEN in env.production}
+      COMPUTER_IMAGE: openbot-agent-computer:${OPENBOT_IMAGE_TAG:-local}
+      COMPUTER_NAMESPACE: ${COMPUTER_NAMESPACE:-openbot-production}
+      COMPUTER_NETWORK: ${COMPUTER_NETWORK:-openbot-backend}
+      COMPUTER_RUNTIME: ${COMPUTER_RUNTIME:-}
+      COMPUTER_MEMORY_BYTES: ${COMPUTER_MEMORY_BYTES:-3221225472}
+      COMPUTER_NANO_CPUS: ${COMPUTER_NANO_CPUS:-1500000000}
+      COMPUTER_PIDS_LIMIT: ${COMPUTER_PIDS_LIMIT:-512}
+      EGRESS_PROXY_DEFAULT: ${EGRESS_PROXY_DEFAULT:-}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    expose:
+      - "4300"
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "bun -e \"const r = await fetch('http://localhost:4300/health'); const body = await r.json(); process.exit(r.ok && body.docker ? 0 : 1)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  # This service exists only to build the image that the supervisor starts dynamically per Bot.
+  # It is not started by the normal `up` command.
+  agent-computer-image:
+    profiles: ["images"]
+    image: openbot-agent-computer:${OPENBOT_IMAGE_TAG:-local}
+    build:
+      context: ../..
+      dockerfile: agent-computer/Dockerfile
+    command: ["bun", "--version"]
+
+networks:
+  edge:
+  backend:
+    name: ${COMPUTER_NETWORK:-openbot-backend}
+
+volumes:
+  postgres-data:
+  caddy-data:
+  caddy-config:

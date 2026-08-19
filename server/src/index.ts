@@ -12,8 +12,8 @@ import {
   startChannelActivityListener,
 } from "./channels/events";
 import { createChannelStore } from "./channels/routes";
-import { createThreadIdentity } from "./channels/thread-identity";
 import { websocket as channelSocket } from "./channels/socket";
+import { createThreadIdentity } from "./channels/thread-identity";
 import { createSandboxedStore } from "./components/sandboxed";
 import { createComponentStore } from "./components/store";
 import { createComputerClient } from "./computer/client";
@@ -36,6 +36,7 @@ import {
   resolveModelApiKey,
 } from "./credentials";
 import { createDatabase } from "./db/client";
+import { isTrustedWebSocketOrigin } from "./origin";
 import { createPluginStore } from "./plugins/store";
 import {
   createPackageStatusReader,
@@ -399,11 +400,16 @@ serve<SocketData>({
   port,
   async fetch(request, server) {
     const url = new URL(request.url);
-    const streamBotId = streamPathBotId(url.pathname);
+    const isWebSocket =
+      request.headers.get("upgrade")?.toLowerCase() === "websocket";
     if (
-      streamBotId !== null &&
-      request.headers.get("upgrade")?.toLowerCase() === "websocket"
+      isWebSocket &&
+      !isTrustedWebSocketOrigin(request, config.trustedOrigins)
     ) {
+      return new Response("Untrusted WebSocket origin.", { status: 403 });
+    }
+    const streamBotId = streamPathBotId(url.pathname);
+    if (streamBotId !== null && isWebSocket) {
       if (!config.computer) {
         return new Response("No computer is configured.", { status: 503 });
       }

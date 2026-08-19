@@ -198,6 +198,8 @@ export type EnsureOptions = {
    */
   runtime?: string;
   memoryBytes?: number;
+  /** Docker NanoCpus: 1_000_000_000 is one CPU core. */
+  nanoCpus?: number;
   pidsLimit?: number;
   /**
    * The volume holding the SPIRE agent's Workload API socket, mounted read-only into each computer
@@ -251,6 +253,7 @@ function hostConfig(names: ComputerNames, options: EnsureOptions) {
     CapDrop: ["ALL"],
     // A runaway Bot is a resource problem for itself, not for every other Bot on the host.
     ...(options.memoryBytes ? { Memory: options.memoryBytes } : {}),
+    ...(options.nanoCpus ? { NanoCpus: options.nanoCpus } : {}),
     PidsLimit: options.pidsLimit ?? 512,
     // Chromium's sandbox wants shared memory and will crash on the 64MB default.
     ShmSize: 1_073_741_824,

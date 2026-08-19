@@ -12,3 +12,7 @@ COPY server server
 COPY examples examples
 
 WORKDIR /app/server
+
+ENV NODE_ENV=production
+EXPOSE 3001
+CMD ["bun", "src/index.ts"]

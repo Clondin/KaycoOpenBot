@@ -1,6 +1,9 @@
 import { createAuthClient } from "better-auth/react";
+import { openbotApiOrigin } from "../api-origin";
 
-export const authClient = createAuthClient();
+export const authClient = createAuthClient(
+  openbotApiOrigin ? { baseURL: openbotApiOrigin } : {},
+);
 
 export async function signInWithGoogle() {
   const result = await authClient.signIn.social({

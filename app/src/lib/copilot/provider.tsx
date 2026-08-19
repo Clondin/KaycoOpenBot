@@ -1,5 +1,6 @@
 import { CopilotKitProvider } from "@copilotkit/react-core/v2";
 import type { ReactNode } from "react";
+import { apiUrl } from "../api-origin";
 import { deploymentPreviewEnabled } from "../deployment-preview";
 import { ActiveBotProvider } from "./active-bot";
 import { ComputerTools } from "./computer-tools";
@@ -27,7 +28,10 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
   if (deploymentPreviewEnabled) return children;
 
   return (
-    <CopilotKitProvider runtimeUrl="/api/copilotkit" credentials="include">
+    <CopilotKitProvider
+      runtimeUrl={apiUrl("/api/copilotkit")}
+      credentials="include"
+    >
       {/* Computer tools target the Bot declared by the mounted surface. */}
       <ActiveBotProvider>
         <ComputerTools />

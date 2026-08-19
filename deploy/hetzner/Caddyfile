@@ -1,0 +1,22 @@
+{
+	email {$TLS_EMAIL}
+	admin off
+}
+
+{$OPENBOT_API_HOST} {
+	encode zstd gzip
+
+	reverse_proxy server:3001
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+
+	log {
+		output stdout
+		format json
+	}
+}
