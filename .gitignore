@@ -12,6 +12,7 @@ node_modules/
 app/src/lib/generated/application-config.ts
 .logs/
 .demo-logs/
+.vercel/
 **/.impeccable
 .wave-state.md
 

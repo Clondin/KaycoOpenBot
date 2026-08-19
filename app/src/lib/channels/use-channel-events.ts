@@ -1,5 +1,6 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
+import { deploymentPreviewEnabled } from "../deployment-preview";
 import { type ChannelSummary, channelKeys } from "./queries";
 
 /**
@@ -29,6 +30,8 @@ export function useChannelEvents() {
   const queryClient = useQueryClient();
 
   useEffect(() => {
+    if (deploymentPreviewEnabled) return;
+
     let socket: WebSocket | undefined;
     let retryTimer: number | undefined;
     let retryDelay = FIRST_RETRY_MS;
