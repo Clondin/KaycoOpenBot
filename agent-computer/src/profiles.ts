@@ -35,6 +35,7 @@
 import { readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { type BrowserContext, chromium, type Page } from "playwright";
+import { profileDirectoryFor } from "./bot-id";
 import { egressFor, egressLabel } from "./egress";
 
 /** The viewport, which is what a person's click coordinates are relative to. */
@@ -64,6 +65,10 @@ const LAUNCH_ARGS = [
   "--no-sandbox",
   "--disable-dev-shm-usage",
   "--password-store=basic",
+  "--disable-background-networking",
+  "--disable-component-update",
+  "--disable-default-apps",
+  "--disable-sync",
 ];
 
 /**
@@ -114,7 +119,8 @@ export function createProfiles(root: string) {
   /** Launches in flight, so a cold computer is started once however many callers ask at once. */
   const starting = new Map<string, Promise<Page>>();
 
-  const directoryFor = (botId: string): string => join(root, botId);
+  const directoryFor = (botId: string): string =>
+    profileDirectoryFor(root, botId);
 
   const sweepLocks = async (dir: string): Promise<void> => {
     await Promise.all(

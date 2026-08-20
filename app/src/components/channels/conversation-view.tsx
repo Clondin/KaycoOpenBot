@@ -1,5 +1,11 @@
 import type { Message } from "@ag-ui/core";
 import {
+  IconChevronDown,
+  IconChevronUp,
+  IconSearch,
+  IconX,
+} from "@tabler/icons-react";
+import {
   type ReactNode,
   useCallback,
   useEffect,
@@ -7,6 +13,9 @@ import {
   useState,
 } from "react";
 import { ChatTranscript } from "@/components/channels/chat-transcript";
+import { searchableMessageIds } from "@/components/channels/chat-messages";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import {
   type AgentOption,
   type CommandOption,
@@ -30,6 +39,10 @@ export function ConversationView({
   queueWhileBusy = false,
   onSubmit,
   onStop,
+  channelId,
+  draftKey,
+  searchOpen = false,
+  onCloseSearch,
 }: {
   messages: readonly Message[];
   busy?: boolean;
@@ -75,6 +88,10 @@ export function ConversationView({
   onSubmit: (draft: ComposerDraft) => void | Promise<void>;
   /** Stop the Bot mid-answer; forwarded to turn the send button into a stop button. */
   onStop?: () => void;
+  channelId?: string;
+  draftKey?: string;
+  searchOpen?: boolean;
+  onCloseSearch?: () => void;
 }) {
   /*
    * THE QUEUE LIVES HERE BECAUSE BOTH HALVES OF IT DO.
@@ -111,6 +128,27 @@ export function ConversationView({
    */
   const [running, setRunning] = useState(false);
   const inFlight = pending || running;
+  const [searchQuery, setSearchQuery] = useState("");
+  const [activeSearchIndex, setActiveSearchIndex] = useState(0);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const searchMatches = searchableMessageIds(messages, searchQuery);
+  const boundedSearchIndex =
+    searchMatches.length === 0
+      ? 0
+      : Math.min(activeSearchIndex, searchMatches.length - 1);
+  const activeSearchMessageId = searchMatches[boundedSearchIndex];
+
+  useEffect(() => {
+    if (searchOpen) searchInputRef.current?.focus();
+  }, [searchOpen]);
+
+  const moveSearch = (direction: -1 | 1) => {
+    if (searchMatches.length === 0) return;
+    setActiveSearchIndex(
+      (current) =>
+        (current + direction + searchMatches.length) % searchMatches.length,
+    );
+  };
 
   /**
    * Every change to the queue goes through here, so the ref and the state can never disagree.
@@ -204,10 +242,13 @@ export function ConversationView({
          */}
         <ChatTranscript
           busy={busy}
+          channelId={channelId}
           commandNames={(commands ?? [])
             .map((command) => command.name)
             .join(",")}
           messages={messages}
+          searchQuery={searchOpen ? searchQuery : ""}
+          activeSearchMessageId={searchOpen ? activeSearchMessageId : undefined}
           onRemoveQueued={(id) => {
             apply({ id, type: "remove" });
           }}
@@ -216,6 +257,73 @@ export function ConversationView({
         />
       </div>
       <div className="max-w-2xl mx-auto w-full px-0 pb-4 shrink-0">
+        {searchOpen ? (
+          <div className="mb-2 flex items-center gap-1 rounded-xl border bg-card p-1.5 shadow-sm">
+            <IconSearch className="ml-1 size-4 shrink-0 text-muted-foreground" />
+            <Input
+              aria-label="Search this conversation"
+              className="h-8 border-0 shadow-none focus-visible:ring-0"
+              onChange={(event) => {
+                setSearchQuery(event.target.value);
+                setActiveSearchIndex(0);
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Escape") {
+                  setSearchQuery("");
+                  onCloseSearch?.();
+                } else if (event.key === "Enter") {
+                  event.preventDefault();
+                  moveSearch(event.shiftKey ? -1 : 1);
+                }
+              }}
+              placeholder="Search messages"
+              ref={searchInputRef}
+              value={searchQuery}
+            />
+            <span
+              className="min-w-14 text-center text-xs text-muted-foreground"
+              role="status"
+            >
+              {searchQuery.trim()
+                ? searchMatches.length
+                  ? `${boundedSearchIndex + 1} of ${searchMatches.length}`
+                  : "No matches"
+                : ""}
+            </span>
+            <Button
+              aria-label="Previous match"
+              disabled={searchMatches.length === 0}
+              onClick={() => moveSearch(-1)}
+              size="icon-sm"
+              type="button"
+              variant="ghost"
+            >
+              <IconChevronUp />
+            </Button>
+            <Button
+              aria-label="Next match"
+              disabled={searchMatches.length === 0}
+              onClick={() => moveSearch(1)}
+              size="icon-sm"
+              type="button"
+              variant="ghost"
+            >
+              <IconChevronDown />
+            </Button>
+            <Button
+              aria-label="Close conversation search"
+              onClick={() => {
+                setSearchQuery("");
+                onCloseSearch?.();
+              }}
+              size="icon-sm"
+              type="button"
+              variant="ghost"
+            >
+              <IconX />
+            </Button>
+          </div>
+        ) : null}
         {notice}
         <Composer
           agents={agents}
@@ -223,6 +331,7 @@ export function ConversationView({
           className="w-full mt-auto"
           compact
           disabled={disabled}
+          draftKey={draftKey}
           onQueue={
             queueWhileBusy
               ? (draft) => {

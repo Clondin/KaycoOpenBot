@@ -33,6 +33,14 @@ Use `bash scripts/start.sh` for the full local stack. It starts Docker services,
 
 Use `bun run dev` only when you want the app and API server without starting the Docker Bots and computers.
 
+For a local MCP server with fixed example company notes, run:
+
+```sh
+bun run mock:knowledge
+```
+
+It prints the HTTP MCP URL to register in the admin plugin catalogue. Grant its `search_notes` tool to a coworker to exercise the complete server-side tool path without connecting a real vendor account.
+
 | Service           | Port                       |
 | ----------------- | -------------------------- |
 | `app`             | 3010                       |
@@ -76,6 +84,24 @@ them against a deployment you are using puts test Bots in its audit trail and it
 reports. Point `DATABASE_URL` at a database of their own to keep the two apart.
 
 CI uses `bun run test:ci` to verify the expected test count in addition to normal tests.
+
+Run the source supply-chain policy locally with:
+
+```sh
+bun run supply-chain:check
+```
+
+It refuses GitHub Actions that are not pinned to a full commit SHA, unversioned
+or `latest` container bases, a missing `bun.lock`, and missing dependency patch
+files. Pull requests also run GitHub's dependency review and block newly added
+high-severity vulnerable dependencies.
+
+The manual `release / verified candidate` workflow runs only from `main`. It
+installs from the lockfile, runs formatting, lint, types, migrations, the full
+counted test suite, and the build, then produces a source archive, SPDX SBOM,
+SHA-256 checksums, and GitHub build-provenance attestation. It creates a
+verified candidate artifact; publishing or deploying it remains a separate,
+intentional step.
 
 `bun run test:smoke` is separate and needs a deployment that is up:
 

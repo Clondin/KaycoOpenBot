@@ -44,6 +44,7 @@ import {
 import { useChannelEvents } from "@/lib/channels/use-channel-events";
 import { appConfig } from "@/lib/generated/application-config";
 import { Button } from "../ui/button";
+import { CommandPalette } from "../command-palette";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../ui/empty";
 import { Channel } from "./channel";
 
@@ -201,6 +202,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
             >
               <IconPlus />
             </Button>
+            <CommandPalette />
           </SidebarMenuItem>
         </SidebarMenu>
       </SidebarHeader>
@@ -246,7 +248,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
                   <EmptyHeader>
                     <EmptyTitle>You don't have channels yet</EmptyTitle>
                     <EmptyDescription className="text-pretty">
-                      Start talking to agents and your channels will appear
+                      Start talking to coworkers and your channels will appear
                       here.
                     </EmptyDescription>
                   </EmptyHeader>
@@ -322,7 +324,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
               <div className="size-[28px] flex items-center justify-center">
                 <IconBolt />
               </div>
-              <span className="text-sm trackint-tight">Agents</span>
+              <span className="text-sm trackint-tight">Coworkers</span>
             </SidebarMenuButton>
           </SidebarMenuItem>
           <SidebarMenuItem>

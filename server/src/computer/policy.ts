@@ -191,13 +191,22 @@ function matches(
   onError: boolean,
 ): boolean {
   try {
-    return (
-      evaluate(
-        expression,
-        context as unknown as Record<string, unknown>,
-        POLICY_FUNCTIONS as Record<string, CallableFunction>,
-      ) === true
+    const result = evaluate(
+      expression,
+      context as unknown as Record<string, unknown>,
+      POLICY_FUNCTIONS as Record<string, CallableFunction>,
     );
+    if (typeof result === "boolean") return result;
+
+    console.error(
+      JSON.stringify({
+        type: "computer-policy-expression-error",
+        expression,
+        error: `expected a true or false answer, got ${result === null ? "null" : typeof result}`,
+        treatedAs: onError,
+      }),
+    );
+    return onError;
   } catch (error) {
     console.error(
       JSON.stringify({
@@ -292,9 +301,15 @@ export function evaluateActionPolicy(
 
 /** A refusal a person can act on: what was refused, and on what. */
 function describeRefusal(context: PolicyContext, expression: string): string {
+  if (context.mcp) {
+    return (
+      `This deployment's policy does not allow that: ${context.mcp.tool} on ` +
+      `${context.mcp.server} is blocked by the rule \`${expression}\`.`
+    );
+  }
   // A file refusal must not be phrased as happening "on <host>": the workspace has nothing to do with
   // whatever page the browser happens to be showing, and saying so sends somebody to the wrong place.
-  if (context.file) {
+  if (context.file?.path) {
     return (
       `This deployment's policy does not allow that: the file ${context.file.path} ` +
       `is blocked by the rule \`${expression}\`.`

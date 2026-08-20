@@ -63,6 +63,49 @@ export async function supplySecret(
   }
 }
 
+/** Upload a user-selected file directly into the remote page while they hold control. */
+export async function uploadHumanFile(
+  computerId: string,
+  file: File,
+): Promise<{ ok: boolean; error?: string }> {
+  if (file.size > 10 * 1024 * 1024) {
+    return { ok: false, error: "Files are limited to 10 MB." };
+  }
+  const dataUrl = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  }).catch(() => "");
+  if (!dataUrl) return { ok: false, error: "That file could not be read." };
+
+  try {
+    const response = await fetch(`/api/computers/${computerId}/human/file`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        name: file.name,
+        mimeType: file.type || "application/octet-stream",
+        base64: dataUrl.slice(dataUrl.indexOf(",") + 1),
+      }),
+    });
+    if (response.ok) return { ok: true };
+    const body = (await response.json().catch(() => null)) as {
+      error?: string;
+    } | null;
+    return {
+      ok: false,
+      error: body?.error ?? "That file could not be uploaded.",
+    };
+  } catch {
+    return {
+      ok: false,
+      error: "The assistant's computer could not be reached.",
+    };
+  }
+}
+
 /**
  * Serializes human input requests without blocking the caller; ordering matters for typed secrets.
  */

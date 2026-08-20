@@ -40,6 +40,14 @@ These are durable product directions, not a complete change log:
 - **Governed work:** durable runs, approvals, routines, projects, memory,
   delegation, notifications, and user-facing work surfaces are active product
   development areas.
+- **Conversation and team workflow:** persistent drafts, attachments, search,
+  reactions, transcript screenshots, user-selected Codex settings, explicit
+  browser handover, and safe portable coworker templates are Kayco product
+  behavior.
+- **Computer experience:** leased and prewarmed Bot computers, compact
+  action-and-observe results, one shared reconnecting live screen, visible
+  progress, resizable takeover, and direct human paste/file transfer are Kayco
+  product behavior.
 - **Extensions and quality:** a versioned extension SDK, policy evaluations,
   and operational tooling are active product development areas.
 

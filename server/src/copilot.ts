@@ -7,13 +7,20 @@ import {
   CopilotRuntime,
 } from "@copilotkit/runtime/v2";
 import { createCopilotHonoHandler } from "@copilotkit/runtime/v2/hono";
+import { defer, switchMap } from "rxjs";
+import { z } from "zod";
 import type { AgentActor } from "./agents/profile-types";
-import type { StallGuard } from "./channels/stall-guard";
+import type { AgentFetch, StallGuard } from "./channels/stall-guard";
 import type { DeploymentConfig } from "./config";
 import {
   type ModelProvider,
   modelApiKeyEnvironmentVariable,
 } from "./model-provider";
+import {
+  type GrantedTool,
+  toolRunContext,
+  type ToolRunContext,
+} from "./plugins/tools";
 
 /**
  * The CopilotKit runtime, always in Intelligence mode.
@@ -73,6 +80,7 @@ export type CodexAgentProvider = {
   agentFor(
     userId: string,
     agent: RegisteredBuiltInAgent,
+    loadTools: (run?: ToolRunContext) => Promise<GrantedTool[]>,
   ): Promise<AbstractAgent | null>;
 };
 
@@ -177,6 +185,7 @@ export function builtInAgentConfiguration(
   agent: RegisteredBuiltInAgent,
   model: RuntimeModel,
   apiKey: string | null,
+  tools: GrantedTool[] = [],
 ): BuiltInAgentConfiguration {
   if (!apiKey) {
     const environmentVariable = modelApiKeyEnvironmentVariable(model.provider);
@@ -196,6 +205,7 @@ export function builtInAgentConfiguration(
     return {
       model: xai(model.defaultModel),
       prompt: agent.systemPrompt,
+      ...(tools.length > 0 ? { tools, maxSteps: TOOL_STEPS } : {}),
     };
   }
 
@@ -203,8 +213,11 @@ export function builtInAgentConfiguration(
     model: `${model.provider}/${model.defaultModel}`,
     prompt: agent.systemPrompt,
     apiKey,
+    ...(tools.length > 0 ? { tools, maxSteps: TOOL_STEPS } : {}),
   };
 }
+
+const TOOL_STEPS = 8;
 
 /**
  * Build the built-in and remote AG-UI agent map the runtime serves.
@@ -212,35 +225,91 @@ export function builtInAgentConfiguration(
  * Keyed by the registry id, which is what the browser sends as the agent name, so the two cannot
  * drift apart without the lookup failing loudly rather than silently running the wrong Bot.
  */
-export function buildAgents(
+export async function buildAgents(
   agents: RegisteredAgent[],
   model: RuntimeModel,
   apiKey: string | null,
   /** Absent leaves every stream unwatched, which is what an unconfigured timeout means. */
   stallGuard?: StallGuard,
   overrides: ReadonlyMap<string, AbstractAgent> = new Map(),
-): Record<string, AbstractAgent> {
+  loadTools: LoadToolsForBot = async () => [],
+  signRun?: SignRun,
+  agentFetch?: AgentFetch,
+): Promise<Record<string, AbstractAgent>> {
   return Object.fromEntries(
-    agents.map((agent) => [
-      agent.id,
-      overrides.get(agent.id) ?? buildAgent(agent, model, apiKey, stallGuard),
-    ]),
+    await Promise.all(
+      agents.map(async (agent) => {
+        const override = overrides.get(agent.id);
+        return [
+          agent.id,
+          override ??
+            (await buildAgent(
+              agent,
+              model,
+              apiKey,
+              stallGuard,
+              loadTools,
+              signRun,
+              agentFetch,
+            )),
+        ] as const;
+      }),
+    ),
   );
 }
 
-function buildAgent(
+async function buildAgent(
   agent: RegisteredAgent,
   model: RuntimeModel,
   apiKey: string | null,
-  stallGuard?: StallGuard,
-): AbstractAgent {
+  stallGuard: StallGuard | undefined,
+  loadTools: LoadToolsForBot,
+  signRun: SignRun | undefined,
+  agentFetch: AgentFetch | undefined,
+): Promise<AbstractAgent> {
   if (agent.type === "built_in") {
-    return new BuiltInAgent(builtInAgentConfiguration(agent, model, apiKey));
+    return new ContextualBuiltInAgent(agent, model, apiKey, loadTools);
   }
   if (agent.type === "unavailable") {
     return new UnavailableAgent(agent);
   }
-  return remoteAgentWithStandingRole(agent, stallGuard);
+  return remoteAgentWithStandingRole(
+    agent,
+    stallGuard,
+    await loadTools(agent.id),
+    signRun,
+    agentFetch,
+  );
+}
+
+/**
+ * A built-in agent whose governed tools are created for the durable task that opened this run.
+ *
+ * The runtime map is resolved before AG-UI supplies `RunAgentInput`, so eagerly creating tools loses
+ * the channel's task id. Loading inside `run` keeps approvals scoped and also means a grant revoked
+ * between two turns disappears on the next turn.
+ */
+class ContextualBuiltInAgent extends AbstractAgent {
+  constructor(
+    private readonly agent: RegisteredBuiltInAgent,
+    private readonly model: RuntimeModel,
+    private readonly apiKey: string | null,
+    private readonly loadTools: LoadToolsForBot,
+  ) {
+    super({ agentId: agent.id, description: agent.name });
+  }
+
+  run(input: AgentRunInput) {
+    return defer(() =>
+      this.loadTools(this.agent.id, toolRunContext(input.forwardedProps)),
+    ).pipe(
+      switchMap((tools) =>
+        new BuiltInAgent(
+          builtInAgentConfiguration(this.agent, this.model, this.apiKey, tools),
+        ).run(input),
+      ),
+    );
+  }
 }
 
 /**
@@ -257,7 +326,10 @@ function buildAgent(
  */
 function remoteAgentWithStandingRole(
   agent: RegisteredRemoteAgent,
-  stallGuard?: StallGuard,
+  stallGuard: StallGuard | undefined,
+  tools: GrantedTool[] = [],
+  signRun?: SignRun,
+  agentFetch?: AgentFetch,
 ) {
   const remote = new HttpAgent({
     url: agent.endpoint,
@@ -266,8 +338,15 @@ function remoteAgentWithStandingRole(
     // `{ url, headers?, fetch? }`, verified against @ag-ui/client 0.0.57.
     ...(agent.headers ? { headers: agent.headers } : {}),
     ...(stallGuard
-      ? { fetch: stallGuard.watch({ id: agent.id, name: agent.name }) }
-      : {}),
+      ? {
+          fetch: stallGuard.watch(
+            { id: agent.id, name: agent.name },
+            agentFetch,
+          ),
+        }
+      : agentFetch
+        ? { fetch: agentFetch }
+        : {}),
   });
   remote.use((input, next) =>
     next.run({
@@ -278,7 +357,32 @@ function remoteAgentWithStandingRole(
           (message) => message.id !== agent.standingMessage.id,
         ),
       ],
-    }),
+      tools: [
+        ...(input.tools ?? []),
+        ...tools.map((tool) => ({
+          name: tool.name,
+          description: tool.description,
+          parameters: z.toJSONSchema(tool.parameters) as Record<
+            string,
+            unknown
+          >,
+        })),
+      ],
+      forwardedProps: {
+        ...(input.forwardedProps ?? {}),
+        openbotBotId: agent.id,
+        openbotDeploymentTools: tools.map((tool) => tool.name),
+        ...(signRun
+          ? {
+              openbotRun: signRun(
+                agent.id,
+                input.runId,
+                toolRunContext(input.forwardedProps),
+              ),
+            }
+          : {}),
+      },
+    } as never),
   );
   return remote;
 }
@@ -304,6 +408,9 @@ export async function resolveRuntimeAgents(
   resolveModelApiKey: () => Promise<string | null>,
   codex?: { userId: string; provider: CodexAgentProvider },
   stallGuard?: StallGuard,
+  loadTools?: LoadToolsForBot,
+  signRun?: SignRun,
+  agentFetch?: AgentFetch,
 ): Promise<Record<string, AbstractAgent>> {
   const registered = await loadAgents();
   if (registered.length === 0) {
@@ -313,11 +420,16 @@ export async function resolveRuntimeAgents(
   }
 
   const overrides = new Map<string, AbstractAgent>();
+  const toolsFor = loadTools ?? (async () => []);
   if (codex?.userId) {
     await Promise.all(
       registered.map(async (agent) => {
         if (agent.type !== "built_in") return;
-        const replacement = await codex.provider.agentFor(codex.userId, agent);
+        const replacement = await codex.provider.agentFor(
+          codex.userId,
+          agent,
+          (run) => toolsFor(agent.id, run),
+        );
         if (replacement) overrides.set(agent.id, replacement);
       }),
     );
@@ -328,8 +440,27 @@ export async function resolveRuntimeAgents(
   )
     ? await resolveModelApiKey()
     : null;
-  return buildAgents(registered, model, apiKey, stallGuard, overrides);
+  return buildAgents(
+    registered,
+    model,
+    apiKey,
+    stallGuard,
+    overrides,
+    toolsFor,
+    signRun,
+    agentFetch,
+  );
 }
+
+export type LoadToolsForBot = (
+  botId: string,
+  run?: ToolRunContext,
+) => Promise<GrantedTool[]>;
+export type SignRun = (
+  botId: string,
+  runId: string,
+  task?: ToolRunContext,
+) => string;
 
 /** Who is asking. Agent visibility is decided per person, so a run has to know this first. */
 export type IdentifyActor = (request: Request) => Promise<AgentActor>;
@@ -358,6 +489,9 @@ export function createRequestAgents(
    * that opened it has been answered.
    */
   stallGuard?: StallGuard,
+  loadToolsForActor?: (actorId: string) => LoadToolsForBot,
+  signRunForActor?: (actorId: string) => SignRun,
+  agentFetch?: AgentFetch,
 ) {
   return async ({ request }: { request: Request }) => {
     const actor = await identifyActor(request);
@@ -369,6 +503,9 @@ export function createRequestAgents(
         ? { userId: actor.id, provider: codexAgentProvider }
         : undefined,
       stallGuard,
+      loadToolsForActor?.(actor.id),
+      signRunForActor?.(actor.id),
+      agentFetch,
     );
   };
 }
@@ -394,6 +531,9 @@ export function mountCopilotRuntime(
    * there is no reason for a caller to have to say `undefined` here to reach `basePath`.
    */
   stallGuard: StallGuard,
+  loadToolsForActor?: (actorId: string) => LoadToolsForBot,
+  signRunForActor?: (actorId: string) => SignRun,
+  agentFetch?: AgentFetch,
   basePath = "/api/copilotkit",
 ) {
   const { intelligence } = config.runtime;
@@ -420,6 +560,9 @@ export function mountCopilotRuntime(
       resolveModelApiKey,
       codexAgentProvider,
       stallGuard,
+      loadToolsForActor,
+      signRunForActor,
+      agentFetch,
     ) as never,
   });
 

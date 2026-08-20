@@ -1,6 +1,6 @@
 import { describe, expect, spyOn, test } from "bun:test";
 import { HttpAgent } from "@ag-ui/client";
-import { BuiltInAgent } from "@copilotkit/runtime/v2";
+import { z } from "zod";
 import {
   buildAgents,
   builtInAgentConfiguration,
@@ -121,7 +121,7 @@ describe("registered Copilot agents", () => {
   });
 
   test("names XAI_API_KEY when an xAI credential is missing", async () => {
-    const agents = buildAgents(
+    const agents = await buildAgents(
       [
         {
           id: "general-assistant",
@@ -145,7 +145,7 @@ describe("registered Copilot agents", () => {
   });
 
   test("fails an unavailable built-in agent through the AG-UI lifecycle", async () => {
-    const agents = buildAgents(
+    const agents = await buildAgents(
       [
         {
           id: "general-assistant",
@@ -180,8 +180,8 @@ describe("registered Copilot agents", () => {
     );
   });
 
-  test("constructs built-in and remote agents together", () => {
-    const agents = buildAgents(
+  test("constructs built-in and remote agents together", async () => {
+    const agents = await buildAgents(
       [
         {
           id: "general-assistant",
@@ -200,7 +200,8 @@ describe("registered Copilot agents", () => {
       "openai-secret",
     );
 
-    expect(agents["general-assistant"]).toBeInstanceOf(BuiltInAgent);
+    expect(agents["general-assistant"]).toBeDefined();
+    expect(agents["general-assistant"]).not.toBeInstanceOf(HttpAgent);
     expect(agents.risk).toBeInstanceOf(HttpAgent);
   });
 
@@ -212,7 +213,7 @@ describe("registered Copilot agents", () => {
    * Bot's own name reaches it matters because that name is what the person is shown when its stream
    * goes quiet, and a guard handed the wrong one would say so convincingly.
    */
-  test("hands a remote Bot's fetch to the stall guard, and a built-in Bot none", () => {
+  test("hands a remote Bot's fetch to the stall guard, and a built-in Bot none", async () => {
     const watched: { id: string; name: string }[] = [];
     const stallGuard = {
       watch: (bot: { id: string; name: string }) => {
@@ -222,7 +223,7 @@ describe("registered Copilot agents", () => {
       stop: () => undefined,
     };
 
-    const agents = buildAgents(
+    const agents = await buildAgents(
       [
         {
           id: "general-assistant",
@@ -254,7 +255,7 @@ describe("registered Copilot agents", () => {
    * The same registration is built twice, with a guard whose watch returns a fetch nothing else
    * could have produced and then without one, and the two are compared.
    */
-  test("leaves a remote Bot's fetch alone when no timeout is configured", () => {
+  test("leaves a remote Bot's fetch alone when no timeout is configured", async () => {
     const sentinel = async () => new Response(null);
     const registered = [
       {
@@ -266,17 +267,78 @@ describe("registered Copilot agents", () => {
     ];
     const model = { provider: "openai" as const, defaultModel: "gpt-4.1" };
 
-    const guarded = buildAgents(registered, model, null, {
-      watch: () => sentinel,
-      stop: () => undefined,
-    }).risk;
-    const unguarded = buildAgents(registered, model, null).risk;
+    const guarded = (
+      await buildAgents(registered, model, null, {
+        watch: () => sentinel,
+        stop: () => undefined,
+      })
+    ).risk;
+    const unguarded = (await buildAgents(registered, model, null)).risk;
     if (!(guarded instanceof HttpAgent) || !(unguarded instanceof HttpAgent)) {
       throw new Error("Expected the remote agent");
     }
 
     expect(guarded.fetch).toBe(sentinel);
     expect(unguarded.fetch).not.toBe(sentinel);
+  });
+
+  test("keeps redirect validation underneath the stall guard", async () => {
+    const guardedEndpointFetch = async () => new Response(null);
+    const watchedFetch = async () => new Response(null);
+    let innerFetch: unknown;
+    const agents = await buildAgents(
+      [
+        {
+          id: "risk",
+          name: "Risk",
+          type: "remote_ag_ui",
+          endpoint: "https://risk.example/ag-ui",
+        },
+      ],
+      { provider: "openai", defaultModel: "gpt-4.1" },
+      null,
+      {
+        watch: (_bot, fetchImplementation) => {
+          innerFetch = fetchImplementation;
+          return watchedFetch;
+        },
+        stop: () => undefined,
+      },
+      new Map(),
+      async () => [],
+      undefined,
+      guardedEndpointFetch,
+    );
+
+    const risk = agents.risk;
+    if (!(risk instanceof HttpAgent)) throw new Error("Expected remote agent");
+    expect(innerFetch).toBe(guardedEndpointFetch);
+    expect(risk.fetch).toBe(watchedFetch);
+  });
+
+  test("uses redirect validation directly when no stall guard is configured", async () => {
+    const guardedEndpointFetch = async () => new Response(null);
+    const agents = await buildAgents(
+      [
+        {
+          id: "risk",
+          name: "Risk",
+          type: "remote_ag_ui",
+          endpoint: "https://risk.example/ag-ui",
+        },
+      ],
+      { provider: "openai", defaultModel: "gpt-4.1" },
+      null,
+      undefined,
+      new Map(),
+      async () => [],
+      undefined,
+      guardedEndpointFetch,
+    );
+
+    const risk = agents.risk;
+    if (!(risk instanceof HttpAgent)) throw new Error("Expected remote agent");
+    expect(risk.fetch).toBe(guardedEndpointFetch);
   });
 
   test("resolves fresh built-in agents and credentials for every request", async () => {
@@ -341,6 +403,10 @@ describe("registered Copilot agents", () => {
 
   test("replaces built-in agents with the signed-in user's Codex runtime", async () => {
     let resolverInvoked = false;
+    let toolLoads = 0;
+    let replacementLoadTools:
+      | ((run?: { runId?: string; channelId?: string }) => Promise<unknown>)
+      | undefined;
     const replacement = new HttpAgent({ url: "http://codex.local/ag-ui" });
     const agents = await resolveRuntimeAgents(
       async () => [
@@ -358,12 +424,75 @@ describe("registered Copilot agents", () => {
       },
       {
         userId: "user-7",
-        provider: { agentFor: async () => replacement },
+        provider: {
+          agentFor: async (_userId, _agent, loadTools) => {
+            replacementLoadTools = loadTools;
+            return replacement;
+          },
+        },
+      },
+      undefined,
+      async () => {
+        toolLoads += 1;
+        return [
+          {
+            name: "mcp__notes__search",
+            description: "Search notes.",
+            parameters: z.object({ query: z.string() }),
+            execute: async () => "Found.",
+          },
+        ];
       },
     );
 
     expect(agents["general-assistant"]).toBe(replacement);
     expect(resolverInvoked).toBe(false);
+    expect(toolLoads).toBe(0);
+    const replacementTools = await replacementLoadTools?.({
+      runId: "task-7",
+      channelId: "channel-7",
+    });
+    expect(toolLoads).toBe(1);
+    expect(replacementTools).toMatchObject([
+      { name: "mcp__notes__search", description: "Search notes." },
+    ]);
+  });
+
+  test("loads built-in tools with the durable task that opened the run", async () => {
+    const contexts: unknown[] = [];
+    const agents = await buildAgents(
+      [
+        {
+          id: "general-assistant",
+          name: "General Assistant",
+          type: "built_in",
+          systemPrompt: "Be helpful.",
+        },
+      ],
+      { provider: "openai", defaultModel: "gpt-4.1" },
+      null,
+      undefined,
+      new Map(),
+      async (_botId, run) => {
+        contexts.push(run);
+        return [];
+      },
+    );
+
+    const consoleError = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await expect(
+        agents["general-assistant"]?.runAgent({
+          forwardedProps: {
+            openbotTaskRunId: "task-7",
+            openbotChannelId: "channel-7",
+          },
+        }),
+      ).rejects.toThrow("Add the package credential or set OPENAI_API_KEY");
+    } finally {
+      consoleError.mockRestore();
+    }
+    expect(contexts).toEqual([{ runId: "task-7", channelId: "channel-7" }]);
   });
 });
 
@@ -395,7 +524,7 @@ describe("standing agent roles", () => {
 
   test("sends one standing role message ahead of the conversation", async () => {
     await using endpoint = fakeAgUiEndpoint();
-    const agents = buildAgents(
+    const agents = await buildAgents(
       [remoteAgent(endpoint.url)],
       { provider: "openai", defaultModel: "gpt-4.1" },
       null,
@@ -419,7 +548,7 @@ describe("standing agent roles", () => {
 
   test("keeps the standing role out of forwarded props and agent state", async () => {
     await using endpoint = fakeAgUiEndpoint();
-    const agents = buildAgents(
+    const agents = await buildAgents(
       [remoteAgent(endpoint.url)],
       { provider: "openai", defaultModel: "gpt-4.1" },
       null,
@@ -436,9 +565,46 @@ describe("standing agent roles", () => {
     expect(JSON.stringify(sent?.state ?? {})).not.toContain("standing-role");
   });
 
+  test("signs a remote callback for the durable task that opened the run", async () => {
+    await using endpoint = fakeAgUiEndpoint();
+    const signed: unknown[] = [];
+    const agents = await buildAgents(
+      [remoteAgent(endpoint.url)],
+      { provider: "openai", defaultModel: "gpt-4.1" },
+      null,
+      undefined,
+      new Map(),
+      async () => [],
+      (botId, runId, task) => {
+        signed.push({ botId, runId, task });
+        return "signed-run";
+      },
+    );
+
+    const agent = agents.agent_expense;
+    agent?.setMessages([userMessage("Sort these.")]);
+    await agent?.runAgent({
+      forwardedProps: {
+        openbotTaskRunId: "task-7",
+        openbotChannelId: "channel-7",
+      },
+    });
+
+    expect(signed).toHaveLength(1);
+    expect(signed[0]).toMatchObject({
+      botId: "agent_expense",
+      task: { runId: "task-7", channelId: "channel-7" },
+    });
+    expect(endpoint.requests.at(-1)?.forwardedProps).toMatchObject({
+      openbotTaskRunId: "task-7",
+      openbotChannelId: "channel-7",
+      openbotRun: "signed-run",
+    });
+  });
+
   test("resolves a deleted coworker as a tombstone that never reaches its endpoint", async () => {
     await using endpoint = fakeAgUiEndpoint();
-    const agents = buildAgents(
+    const agents = await buildAgents(
       [
         {
           id: "agent_expense",

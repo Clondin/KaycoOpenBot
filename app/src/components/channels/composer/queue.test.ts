@@ -3,7 +3,7 @@ import type { ComposerDraft } from "./draft";
 import { type QueuedMessage, reduceQueue } from "./queue";
 
 function draft(text: string, commandIds: string[] = []): ComposerDraft {
-  return { text, agentId: null, commandIds, isEmpty: false };
+  return { text, agentId: null, commandIds, attachments: [], isEmpty: false };
 }
 
 /** Park one message and hand back the queue it produced, which is what every case starts from. */
@@ -72,7 +72,12 @@ describe("submitting", () => {
 
     expect(result.run).toBeNull();
     expect(result.queue).toEqual([
-      { id: "one", text: "no, the other one", commandIds: [] },
+      {
+        id: "one",
+        text: "no, the other one",
+        commandIds: [],
+        attachments: [],
+      },
     ]);
   });
 
@@ -192,7 +197,12 @@ describe("removing", () => {
     const result = reduceQueue(queue, { id: "one", type: "remove" });
 
     expect(result.queue).toEqual([
-      { id: "two", text: "no, the other one", commandIds: [] },
+      {
+        id: "two",
+        text: "no, the other one",
+        commandIds: [],
+        attachments: [],
+      },
     ]);
   });
 });

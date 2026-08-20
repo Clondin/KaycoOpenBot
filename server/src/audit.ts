@@ -142,6 +142,10 @@ export const auditEventTypes = [
   "delegation.created",
   "memory.created",
 
+  // Portable persona-only team templates. No credentials, grants, messages, endpoints or ids.
+  "team_template.exported",
+  "team_template.imported",
+
   /*
    * What a Bot may answer with, decided per Bot and recorded like anything else it is trusted with.
    *

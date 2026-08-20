@@ -26,3 +26,18 @@ export const codexThreadMappings = pgTable(
     }),
   ],
 );
+
+/** Per-person Codex choices. Null means let the deployment/App Server choose its default. */
+export const codexUserPreferences = pgTable("codex_user_preferences", {
+  userId: text("user_id")
+    .primaryKey()
+    .references(() => users.id, { onDelete: "cascade" }),
+  model: text("model"),
+  effort: text("effort"),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});

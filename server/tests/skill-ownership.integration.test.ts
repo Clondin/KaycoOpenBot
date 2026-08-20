@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { eq, inArray } from "drizzle-orm";
+import { inArray } from "drizzle-orm";
 import { createAuditStore } from "../src/audit";
 import type { ActionPolicy } from "../src/computer/policy";
 import { createDatabase } from "../src/db/client";
@@ -24,7 +24,7 @@ const database = createDatabase(
   TEST_POOL,
 );
 
-let policy: ActionPolicy = { mode: "enforce", deny: [], allow: ["true"] };
+const policy: ActionPolicy = { mode: "enforce", deny: [], allow: ["true"] };
 
 const store = createPluginStore({
   database,
@@ -180,10 +180,16 @@ function routesAs(actor: {
   email: string;
   role: "admin" | "user";
 }) {
-  return createPluginRoutes(store as never, async (context, next) => {
-    context.set("actor", actor as never);
-    await next();
-  });
+  return createPluginRoutes(
+    store as never,
+    async (context, next) => {
+      context.set("actor", actor as never);
+      await next();
+    },
+    // These cover who may GRANT a skill, which is a separate question from who may act as the Bot it
+    // is granted to. That one is `bot-access.test.ts`.
+    async () => true,
+  );
 }
 
 const asAlice = () =>

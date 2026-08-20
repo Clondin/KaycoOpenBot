@@ -19,6 +19,8 @@ export type AgentProfile = {
   endpoint: string | null;
   /** Whether a key is set for it. Never the key itself. */
   hasAuth: boolean;
+  /** Whether a callback credential exists. The credential itself is shown only when issued. */
+  hasCallbackToken: boolean;
   hidden: boolean;
   systemOwned: boolean;
   canManage: boolean;

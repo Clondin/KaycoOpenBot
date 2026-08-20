@@ -20,6 +20,7 @@ export const COMPUTER_TOOLS = [
   "computer_navigate",
   "computer_screenshot",
   "computer_read",
+  "computer_observe",
   "computer_snapshot",
   "computer_click",
   "computer_type",
@@ -83,6 +84,14 @@ export type NavigateResult = {
   truncated: boolean;
   /** Wall-clock ms the navigation took, for the progress line in the transcript. */
   elapsedMs: number;
+  /** Fresh compact state, including actionable refs, returned without another model/tool round trip. */
+  observation?: ObserveResult;
+};
+
+export type WarmResult = {
+  ready: true;
+  /** Browser startup time; near zero when the persistent browser was already running. */
+  elapsedMs: number;
 };
 
 export type ScreenshotResult = {
@@ -142,6 +151,19 @@ export type SnapshotResult = {
   truncated: boolean;
 };
 
+/** A compact page read and actionable snapshot returned together after navigation and actions. */
+export type ObserveResult = {
+  snapshotId: number;
+  url: string;
+  title: string;
+  text: string;
+  textTruncated: boolean;
+  elements: SnapshotElement[];
+  elementsTruncated: boolean;
+  /** Small, human-readable changes since this computer's previous observation. */
+  changes: string[];
+};
+
 /** Common to every acting call: which element, and which snapshot the ref came from. */
 export type ActionTarget = { ref: string; snapshotId: number };
 
@@ -179,6 +201,8 @@ export type ActionResult = {
   /** Where the page ended up, which is how a Bot notices that its click navigated. */
   url: string;
   elapsedMs: number;
+  /** Fresh compact state, so the Bot normally does not need a separate read and snapshot turn. */
+  observation?: ObserveResult;
 };
 
 /** Absent path means the whole workspace. */
@@ -307,6 +331,19 @@ export type HumanInputResult = {
   characters?: number;
   key?: string;
   deltaY?: number;
+  url: string;
+};
+
+export type HumanFileInput = {
+  name: string;
+  mimeType: string;
+  base64: string;
+};
+
+export type HumanFileResult = {
+  uploaded: true;
+  name: string;
+  bytes: number;
   url: string;
 };
 

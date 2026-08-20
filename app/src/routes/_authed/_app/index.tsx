@@ -32,6 +32,7 @@ function RouteComponent() {
       </div>
       <div className="mt-8 w-full flex flex-col items-center">
         <Composer
+          draftKey="home"
           agents={toAgentOptions(agents)}
           className="w-full max-w-2xl"
           disabled={!fallback}
@@ -42,7 +43,7 @@ function RouteComponent() {
 
             setError(null);
             try {
-              await start(agentId, draft.text);
+              await start(agentId, draft.text, draft.attachments);
             } catch (caught) {
               setError(
                 caught instanceof Error

@@ -5,11 +5,14 @@ import type {
   ComputerStatus,
   ControlState,
   HumanInput,
+  HumanFileInput,
+  HumanFileResult,
   HumanInputResult,
   KeyInput,
   ListFilesInput,
   ListFilesResult,
   NavigateResult,
+  ObserveResult,
   ReadFileInput,
   ReadFileResult,
   ReadResult,
@@ -19,6 +22,7 @@ import type {
   SecretResult,
   SnapshotResult,
   TypeInput,
+  WarmResult,
   WriteFileInput,
   WriteFileResult,
 } from "./schema";
@@ -55,6 +59,16 @@ export type ComputerClientOptions = {
   /** Backoff used only for observation calls. Acting calls are always attempted once. */
   safeRetryDelaysMs?: number[];
   fetchImpl?: typeof fetch;
+  /** Per-call phase measurements for operations dashboards and regression checks. */
+  onTiming?: (timing: {
+    botId?: string;
+    path: string;
+    attempt: number;
+    locateMs: number;
+    requestMs: number;
+    totalMs: number;
+    status: number;
+  }) => void;
 };
 
 export class ComputerUnavailableError extends Error {
@@ -197,6 +211,7 @@ export function createComputerClient(options: ComputerClientOptions) {
       caller?: AbortSignal,
       safeToRetry = false,
     ): Promise<unknown> {
+      const overallStartedAt = Date.now();
       // Resolved per call rather than held, because a computer that was reset comes back on a
       // different port and a cached address would point at nothing.
       //
@@ -217,6 +232,7 @@ export function createComputerClient(options: ComputerClientOptions) {
         }
 
         let target: string;
+        const locateStartedAt = Date.now();
         try {
           target =
             botId && options.resolveBaseUrl
@@ -226,8 +242,10 @@ export function createComputerClient(options: ComputerClientOptions) {
           if (attempt + 1 < attempts) continue;
           throw error;
         }
+        const locateMs = Date.now() - locateStartedAt;
 
         let response: Response;
+        const requestStartedAt = Date.now();
         try {
           response = await doFetch(`${target}${path}`, {
             ...init,
@@ -266,6 +284,15 @@ export function createComputerClient(options: ComputerClientOptions) {
           string,
           unknown
         > | null;
+        options.onTiming?.({
+          ...(botId ? { botId } : {}),
+          path,
+          attempt: attempt + 1,
+          locateMs,
+          requestMs: Date.now() - requestStartedAt,
+          totalMs: Date.now() - overallStartedAt,
+          status: response.status,
+        });
 
         if (!response.ok) {
           if (
@@ -335,13 +362,18 @@ export function createComputerClient(options: ComputerClientOptions) {
     }
 
     return {
-      async status(botId: string): Promise<ComputerStatus> {
+      async status(
+        requestedBotId = botId ?? "default",
+      ): Promise<ComputerStatus> {
+        if (requestedBotId !== botId) {
+          return build(requestedBotId).status(requestedBotId);
+        }
         try {
           await call("/health", undefined, undefined, true);
-          return { botId, state: "ready" };
+          return { botId: requestedBotId, state: "ready" };
         } catch (error) {
           return {
-            botId,
+            botId: requestedBotId,
             state: "unreachable",
             reason: error instanceof Error ? error.message : "Unknown failure.",
           };
@@ -385,6 +417,21 @@ export function createComputerClient(options: ComputerClientOptions) {
           undefined,
           true,
         )) as SnapshotResult;
+      },
+
+      /** Start the persistent browser ahead of the first visible action. */
+      async warm(): Promise<WarmResult> {
+        return (await post("/warm", {})) as WarmResult;
+      },
+
+      /** Read the useful page text and actionable controls in one compact response. */
+      async observe(): Promise<ObserveResult> {
+        return (await call(
+          "/observe",
+          { method: "POST" },
+          undefined,
+          true,
+        )) as ObserveResult;
       },
 
       /**
@@ -523,6 +570,11 @@ export function createComputerClient(options: ComputerClientOptions) {
       async humanInput(input: HumanInput): Promise<HumanInputResult> {
         const { kind, ...rest } = input;
         return (await post(`/human/${kind}`, rest)) as HumanInputResult;
+      },
+
+      /** A person's selected file goes straight to the focused upload field, never to the model. */
+      async humanFile(input: HumanFileInput): Promise<HumanFileResult> {
+        return (await post("/human/file", input)) as HumanFileResult;
       },
 
       /** The same computer, addressed as a particular Bot. */

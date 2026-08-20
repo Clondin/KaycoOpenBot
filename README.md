@@ -133,7 +133,10 @@ A Bot is any endpoint speaking [AG-UI](https://github.com/ag-ui-protocol/ag-ui),
 - **A computer per Bot**: the supervisor gives each Bot its own container, its own `/workspace` volume and its own browser profile. Set `COMPUTER_RUNTIME=runsc` to run them under gVisor where the host supports it.
 - **The gateway is the only way in**: it resolves the target from a server-held snapshot, evaluates the policy, writes the audit row, and only then calls the computer. There is no path that acts without the record existing first.
 - **CEL policy, fail closed**: rules can inspect `tool.name`, `intent`, `bot.id`, `actor.id`, `page.url`, `page.host`, `element.*`, `key`, `file.*` and `mcp.*`. Deny is evaluated before allow, a missing policy permits nothing, and a broken rule refuses rather than opens.
-- **Take the wheel**: a Bot that hits a login wall or a 2FA prompt asks for help. Control is handed over in the same panel and recorded as `computer.help_requested`, `computer.control_taken` and `computer.control_released`. While a person is driving, Bot actions are refused rather than queued.
+- **Fast, visible computer use**: actions return the changed page and fresh controls together, Bot computers are prewarmed, and one reconnecting live stream powers the resizable watch/full-screen experience without duplicate screenshot polling.
+- **Take the wheel**: a Bot that hits a login wall or a 2FA prompt asks for help. Control is handed over in the same panel and recorded as `computer.help_requested`, `computer.control_taken` and `computer.control_released`. While a person is driving, Bot actions are refused rather than queued. Keyboard focus, paste, and direct file upload stay on the remote page and out of the model conversation.
+- **A conversation workspace**: `Ctrl/⌘ K` opens commands, channel search jumps between matching messages, unsent text survives a reload, and messages can carry files and durable reactions. A Bot can also pin a point-in-time screenshot into the transcript.
+- **Visible model context**: built-in Codex coworkers show their selected model, reasoning level, allowance windows, and reported token usage. Kayco does not invent a dollar cost when the connected subscription does not provide one.
 - **Secrets never enter the transcript**: the trail records that a secret was requested and how long it was, not what it said.
 - **Bring your own agent**: any AG-UI endpoint is a Bot, on a framework or hand written. Endpoints are validated with the same target checks used for browser navigation, and an auth header is stored write-only.
 - **Components instead of prose**: compiled React components live in `app/src/components/gallery/`, sandboxed ones are authored in `/admin/playground` and published with no deployment. Every call asks the server whether the component exists, is published, and is not withheld from that Bot. Data functions are granted per component.
@@ -141,6 +144,7 @@ A Bot is any endpoint speaking [AG-UI](https://github.com/ag-ui-protocol/ag-ui),
 - **Skills are instructions, not capabilities**: personal skills attach only to Bots their author owns, deployment skills are admin-owned, and both are invoked with `/` in the composer.
 - **Durable work control center**: `/work` combines queued and active runs, reusable manual/scheduled/webhook routines, user-to-Bot and Bot-to-Bot handoffs, shared project artifacts, and actionable notifications.
 - **Shared project teams**: assign several coworkers to a project, open one team channel, and explicitly choose which coworker answers each turn. Computers, credentials, and browser sessions remain isolated per Bot.
+- **Portable team templates**: export a team's names and standing roles, then import them as new private coworkers. Templates never carry ids, endpoints, credentials, grants, messages, ownership, or visibility.
 - **Inspectable memory**: stable user, coworker, and project context is stored in PostgreSQL with scope, source, confidence, and pinning. People can inspect, edit, or remove it; relevant user and coworker memory is supplied to the active conversation.
 - **An audit trail you can read**: `/admin/audit` lists what was permitted, what was refused and what failed, and every refusal carries the rule that caused it.
 - **Credentials encrypted at rest**: stored through `/admin/credentials`, never returned by an API, and redacted from audit events.
@@ -230,7 +234,7 @@ GOOGLE_OAUTH_CLIENT_SECRET=
 
 Then set the two that decide who gets in and from where:
 
-- `TRUSTED_ORIGINS` — where the app is served from, `http://localhost:3010` locally. It defaults to `http://localhost:3000`, which is not where `start.sh` serves the app.
+- `TRUSTED_ORIGINS` — where the app is served from. Unset outside production, that is `http://localhost:3010`, which is where `start.sh` serves the app.
 - `INITIAL_ADMIN_EMAILS` — comma separated. An address listed here becomes an administrator the first time it signs in; everybody else becomes a user.
 
 Remove `OPENBOT_DEV_NO_AUTH`, then restart: the sign-in button is written into the app's generated config at startup, so it appears only once all four settings are present. Accounts, sessions and roles are stored in the same PostgreSQL database as everything else.

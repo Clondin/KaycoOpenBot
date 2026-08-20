@@ -1,23 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { apiWebSocketUrl } from "@/lib/api-origin";
 import { pageCoordinates } from "./take-the-wheel";
+import {
+  type ComputerStreamMessage,
+  sendComputerStreamInput,
+  subscribeToComputerStream,
+} from "./computer-stream";
 
-/**
- * Low-latency screencast used while a human is driving the Bot's browser.
- *
- * The inline card keeps using cheap polling for passive watching. This view uses Chrome's
- * screencast socket so input and visual feedback stay synchronized during takeover.
- *
- * Follows Chrome DevTools' own `InputModel.ts` (BSD-3) for the event translation and
- * `steel-dev/steel-browser`'s casting handler (Apache-2.0) for the frame loop, because no maintained
- * library publishes this and every real implementation is one app-internal file.
- */
-
-/**
- * CDP's modifier bitmask. Alt 1, Control 2, Meta 4, Shift 8.
- *
- * Needed or a capital letter typed with Shift arrives lower-case, and Ctrl+A selects nothing.
- */
 function modifierBits(event: {
   altKey: boolean;
   ctrlKey: boolean;
@@ -32,116 +20,132 @@ function modifierBits(event: {
   );
 }
 
-type Props = {
-  /**
-   * Computer identity is part of the stream URL so input and frames stay scoped to the active Bot.
-   */
-  computerId: string;
-  /** Whether the user currently holds the wheel. Input is only sent when true. */
-  driving: boolean;
-  /** Called with a human-readable reason when the stream cannot be established. */
-  onProblem?: (problem: string | null) => void;
+type ControlState = {
+  holder: "bot" | "human";
+  since: string;
+  reason?: string;
+  requested: boolean;
+  secretWanted?: string;
 };
 
-export function LiveScreen({ computerId, driving, onProblem }: Props) {
+type Props = {
+  computerId: string;
+  driving: boolean;
+  onProblem?: (problem: string | null) => void;
+  onControl?: (state: ControlState) => void;
+  onPage?: (page: { url: string; title?: string }) => void;
+  onFrame?: () => void;
+};
+
+type ActionMarker = Extract<ComputerStreamMessage, { type: "action" }>;
+
+/**
+ * A view onto the shared low-latency computer stream.
+ *
+ * Rendering another view no longer opens another socket. Frames are decoded off the main thread,
+ * older decodes are discarded, and the canvas itself holds focus while a person is driving so the
+ * rest of the app does not unexpectedly capture their keyboard.
+ */
+export function LiveScreen({
+  computerId,
+  driving,
+  onProblem,
+  onControl,
+  onPage,
+  onFrame,
+}: Props) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const socketRef = useRef<WebSocket | null>(null);
-  /** The size of the frames Chrome is sending, which is what input coordinates are relative to. */
   const frameSize = useRef<{ width: number; height: number } | null>(null);
-  const [connected, setConnected] = useState(false);
+  const callbacks = useRef({ onProblem, onControl, onPage, onFrame });
+  callbacks.current = { onProblem, onControl, onPage, onFrame };
+  const newestFrame = useRef(0);
+  const [connection, setConnection] = useState<
+    "connecting" | "connected" | "reconnecting"
+  >("connecting");
+  const [marker, setMarker] = useState<ActionMarker | null>(null);
 
   useEffect(() => {
-    const socket = new WebSocket(
-      apiWebSocketUrl(
-        `/api/computers/${encodeURIComponent(computerId)}/stream`,
-      ),
-    );
-    socketRef.current = socket;
-    let closed = false;
-
-    socket.onopen = () => {
-      setConnected(true);
-      onProblem?.(null);
-    };
-
-    socket.onmessage = async (event) => {
-      let message: {
-        type: string;
-        data?: string;
-        width?: number;
-        height?: number;
-        error?: string;
-      };
-      try {
-        message = JSON.parse(String(event.data));
-      } catch {
-        return;
-      }
-      if (message.type === "error") {
-        onProblem?.(message.error ?? "The screen could not be shown.");
-        return;
-      }
-      if (message.type !== "frame" || !message.data) return;
-
-      const canvas = canvasRef.current;
-      if (!canvas || closed) return;
-
-      frameSize.current = {
-        width: message.width ?? 1280,
-        height: message.height ?? 800,
-      };
-
-      /**
-       * Decoded off the main thread and drawn as a bitmap.
-       *
-       * `createImageBitmap` rather than assigning a data URI to an `<img>`: the image path decodes
-       * synchronously on the main thread for every frame, which at screencast rates is the difference
-       * between a smooth page and one that stutters while you are trying to click something on it.
-       */
-      try {
-        const binary = Uint8Array.from(atob(message.data), (c) =>
-          c.charCodeAt(0),
-        );
-        const bitmap = await createImageBitmap(
-          new Blob([binary], { type: "image/jpeg" }),
-        );
-        if (closed) {
-          bitmap.close();
+    let live = true;
+    let markerTimer: ReturnType<typeof setTimeout> | undefined;
+    const unsubscribe = subscribeToComputerStream(
+      computerId,
+      async (message) => {
+        if (!live) return;
+        if (message.type === "connection") {
+          setConnection(message.state);
+          callbacks.current.onProblem?.(
+            message.state === "reconnecting"
+              ? "The live screen disconnected. Reconnecting…"
+              : null,
+          );
           return;
         }
-        canvas.width = bitmap.width;
-        canvas.height = bitmap.height;
-        canvas.getContext("2d")?.drawImage(bitmap, 0, 0);
-        bitmap.close();
-      } catch {
-        // Ignore a single corrupt frame; the next frame replaces it.
-      }
-    };
+        if (message.type === "error") {
+          callbacks.current.onProblem?.(
+            message.error ?? "The live screen could not be shown.",
+          );
+          return;
+        }
+        if (message.type === "control") {
+          callbacks.current.onControl?.(message.state as ControlState);
+          return;
+        }
+        if (message.type === "page") {
+          callbacks.current.onPage?.({
+            url: message.url,
+            title: message.title,
+          });
+          return;
+        }
+        if (message.type === "action") {
+          setMarker(message);
+          clearTimeout(markerTimer);
+          markerTimer = setTimeout(() => setMarker(null), 900);
+          return;
+        }
 
-    socket.onerror = () => onProblem?.("The live screen could not be reached.");
-    socket.onclose = () => setConnected(false);
-
+        const version = ++newestFrame.current;
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+        frameSize.current = {
+          width: message.width ?? 1280,
+          height: message.height ?? 800,
+        };
+        try {
+          const binary = Uint8Array.from(atob(message.data), (character) =>
+            character.charCodeAt(0),
+          );
+          const bitmap = await createImageBitmap(
+            new Blob([binary], { type: "image/jpeg" }),
+          );
+          if (!live || version !== newestFrame.current) {
+            bitmap.close();
+            return;
+          }
+          canvas.width = bitmap.width;
+          canvas.height = bitmap.height;
+          canvas.getContext("2d")?.drawImage(bitmap, 0, 0);
+          bitmap.close();
+          callbacks.current.onFrame?.();
+        } catch {
+          // A single corrupt frame is harmless; the next page change sends another.
+        }
+      },
+    );
     return () => {
-      closed = true;
-      socket.close();
-      socketRef.current = null;
+      live = false;
+      clearTimeout(markerTimer);
+      unsubscribe();
     };
-    // The socket is per Bot; switching Bot must close this stream and open the next one.
-  }, [computerId, onProblem]);
+  }, [computerId]);
 
   const send = useCallback(
     (message: Record<string, unknown>) => {
-      const socket = socketRef.current;
-      if (!driving || socket?.readyState !== WebSocket.OPEN) return;
-      socket.send(JSON.stringify(message));
+      if (driving) sendComputerStreamInput(computerId, message);
     },
-    [driving],
+    [computerId, driving],
   );
 
-  /**
-   * Convert from displayed canvas coordinates to page coordinates with the shared, tested helper.
-   * A screencast frame is the viewport, so its frame size stands in for natural image size.
-   */
   const at = useCallback((event: React.MouseEvent) => {
     const canvas = canvasRef.current;
     const size = frameSize.current;
@@ -156,6 +160,7 @@ export function LiveScreen({ computerId, driving, onProblem }: Props) {
   const onMouse = useCallback(
     (kind: "pressed" | "released" | "moved") =>
       (event: React.MouseEvent<HTMLCanvasElement>) => {
+        if (kind === "pressed") event.currentTarget.focus();
         const point = at(event);
         if (!point) return;
         send({
@@ -175,88 +180,96 @@ export function LiveScreen({ computerId, driving, onProblem }: Props) {
     [at, send],
   );
 
-  /**
-   * Keystrokes, forwarded while driving.
-   *
-   * Listen on window because canvas cannot hold focus. `preventDefault` keeps Tab and typing directed
-   * at the remote page while takeover is active.
-   */
-  useEffect(() => {
-    if (!driving) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") return; // Escape still closes the view.
-      event.preventDefault();
-      send({
-        type: "key",
-        event: "down",
-        key: event.key,
-        code: event.code,
-        // Only a printable character carries text. Sending text for Backspace makes Chrome insert a
-        // character instead of deleting one.
-        ...(event.key.length === 1 ? { text: event.key } : {}),
-        modifiers: modifierBits(event),
-      });
-    };
-    const onKeyUp = (event: KeyboardEvent) => {
-      if (event.key === "Escape") return;
-      event.preventDefault();
-      send({
-        type: "key",
-        event: "up",
-        key: event.key,
-        code: event.code,
-        modifiers: modifierBits(event),
-      });
-    };
-    /** Paste arrives as one block; CDP inserts it as text rather than key events. */
-    const onPaste = (event: ClipboardEvent) => {
-      const text = event.clipboardData?.getData("text");
-      if (!text) return;
-      event.preventDefault();
-      send({ type: "text", text });
-    };
-
-    window.addEventListener("keydown", onKeyDown);
-    window.addEventListener("keyup", onKeyUp);
-    window.addEventListener("paste", onPaste);
-    return () => {
-      window.removeEventListener("keydown", onKeyDown);
-      window.removeEventListener("keyup", onKeyUp);
-      window.removeEventListener("paste", onPaste);
-    };
-  }, [driving, send]);
+  const markerStyle = marker?.box
+    ? {
+        left: `${(marker.box.x / (frameSize.current?.width ?? 1280)) * 100}%`,
+        top: `${(marker.box.y / (frameSize.current?.height ?? 800)) * 100}%`,
+        width: `${(marker.box.width / (frameSize.current?.width ?? 1280)) * 100}%`,
+        height: `${(marker.box.height / (frameSize.current?.height ?? 800)) * 100}%`,
+      }
+    : undefined;
 
   return (
-    <canvas
-      ref={canvasRef}
-      className={`block h-auto w-full ${driving ? "cursor-crosshair" : ""}`}
-      // Only forward input during takeover.
-      {...(driving
-        ? {
-            onMouseDown: onMouse("pressed"),
-            onMouseUp: onMouse("released"),
-            onMouseMove: onMouse("moved"),
-            onContextMenu: (event: React.MouseEvent) => event.preventDefault(),
-            onWheel: (event: React.WheelEvent<HTMLCanvasElement>) => {
-              const point = at(event);
-              if (!point) return;
-              event.preventDefault();
-              send({
-                type: "wheel",
-                ...point,
-                deltaX: event.deltaX,
-                deltaY: event.deltaY,
-                modifiers: modifierBits(event),
-              });
-            },
-          }
-        : {})}
-      aria-label={
-        driving
-          ? "The assistant's screen. You have control: click and type here."
-          : "The assistant's screen, live"
-      }
-      data-connected={connected}
-    />
+    <div className="relative overflow-hidden bg-black">
+      <canvas
+        ref={canvasRef}
+        className={`block h-auto w-full outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-inset ${driving ? "cursor-crosshair" : ""}`}
+        tabIndex={driving ? 0 : -1}
+        {...(driving
+          ? {
+              onMouseDown: onMouse("pressed"),
+              onMouseUp: onMouse("released"),
+              onMouseMove: onMouse("moved"),
+              onContextMenu: (event: React.MouseEvent) =>
+                event.preventDefault(),
+              onWheel: (event: React.WheelEvent<HTMLCanvasElement>) => {
+                const point = at(event);
+                if (!point) return;
+                send({
+                  type: "wheel",
+                  ...point,
+                  deltaX: event.deltaX,
+                  deltaY: event.deltaY,
+                  modifiers: modifierBits(event),
+                });
+              },
+              onKeyDown: (event: React.KeyboardEvent<HTMLCanvasElement>) => {
+                if (event.key === "Escape") return;
+                event.preventDefault();
+                send({
+                  type: "key",
+                  event: "down",
+                  key: event.key,
+                  code: event.code,
+                  ...(event.key.length === 1 ? { text: event.key } : {}),
+                  modifiers: modifierBits(event),
+                });
+              },
+              onKeyUp: (event: React.KeyboardEvent<HTMLCanvasElement>) => {
+                if (event.key === "Escape") return;
+                event.preventDefault();
+                send({
+                  type: "key",
+                  event: "up",
+                  key: event.key,
+                  code: event.code,
+                  modifiers: modifierBits(event),
+                });
+              },
+              onPaste: (event: React.ClipboardEvent<HTMLCanvasElement>) => {
+                const text = event.clipboardData.getData("text");
+                if (!text) return;
+                event.preventDefault();
+                send({ type: "text", text });
+              },
+            }
+          : {})}
+        aria-label={
+          driving
+            ? "The assistant's live screen. You have control. Focus here to click, type, or paste."
+            : "The assistant's live screen"
+        }
+        aria-describedby={driving ? `computer-help-${computerId}` : undefined}
+        data-connected={connection === "connected"}
+      />
+      {markerStyle ? (
+        <span
+          aria-hidden="true"
+          className="absolute pointer-events-none rounded border-2 border-sky-400 bg-sky-400/15 animate-pulse"
+          style={markerStyle}
+        />
+      ) : null}
+      {connection !== "connected" ? (
+        <span className="absolute bottom-2 left-2 rounded-full bg-black/70 px-2 py-1 text-xs text-white">
+          {connection === "reconnecting" ? "Reconnecting…" : "Connecting…"}
+        </span>
+      ) : null}
+      {driving ? (
+        <span id={`computer-help-${computerId}`} className="sr-only">
+          Click the screen to focus it. Paste sends text directly to the remote
+          page. Press Escape to leave full screen.
+        </span>
+      ) : null}
+    </div>
   );
 }

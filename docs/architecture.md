@@ -30,10 +30,11 @@ The compose file also defines optional SPIRE services. `start.sh` does not start
 
 1. The app opens a channel or direct Bot session.
 2. The server resolves the signed-in actor and selected coworker.
-3. CopilotKit runtime sends the turn to the configured AG-UI endpoint.
-4. The surface registers available frontend tools: browser tools, MCP tools, and components granted to that Bot.
-5. Acting browser/file/MCP calls return to the server for authorization and audit.
-6. The server streams results back to the app and Intelligence thread.
+3. The server loads the MCP tools granted to that named coworker and adds their descriptions to the run.
+4. CopilotKit runtime sends the turn to the configured AG-UI endpoint. Remote coworkers also receive a short-lived, signed assertion tying the run to the coworker, signed-in actor, and durable channel task when one opened the turn.
+5. The surface registers only tools that must run in the browser, such as computer controls and components.
+6. Built-in coworkers execute MCP calls directly on the server. Remote coworkers call the server back with their per-coworker token and signed run assertion.
+7. Browser, file, and MCP actions pass through the same authorization, policy, approval, and audit boundaries before the server streams results back to the app and Intelligence thread. A server-side MCP call that needs approval waits on its validated durable task and retries once with the exact approved request.
 
 ## Browser action governance
 
@@ -73,6 +74,23 @@ With `COMPUTER_SUPERVISOR_URL`, each Bot gets its own computer container, worksp
 
 The supervisor exposes only ensure, stop, reset, and list operations. It holds the Docker socket, so do not expose it outside the deployment network. Set `COMPUTER_RUNTIME=runsc` to run computers under gVisor on hosts that support it.
 
+The server leases a supervisor-reported computer address for one minute and deduplicates concurrent
+cold starts. Stop and reset invalidate the lease immediately. Opening the screen also warms the
+persistent Chromium profile so the first visible action is not forced to pay both container and
+browser startup costs.
+
+Browser actions return a compact observation with page text, fresh actionable refs, and a small
+change summary. This lets the next decision continue from the action response instead of spending
+separate model turns on `read` and `snapshot`; full reads and 200-control snapshots remain explicit
+fallbacks for long pages. Each server-to-computer call emits structured `computer-timing` phase data
+for location, transport, and total duration.
+
+The watch panel uses one shared WebSocket per Bot. Chrome pushes JPEG frames only when the page
+changes, and that same connection carries page metadata, control handovers, action highlights, and
+human input. Inline and full-screen views share the connection and its latest frame, so historical
+tool rows do not poll or accumulate copies of the current screenshot. Background media is skipped
+while nobody is watching and allowed while a live viewer is attached.
+
 ## Human control and secrets
 
 Handovers are audited as control events:
@@ -84,6 +102,10 @@ Handovers are audited as control events:
 While a person controls the browser, Bot actions are refused rather than queued.
 
 Secret entry is separate from chat content. The audit trail records that a secret was requested or supplied and the character count, not the secret value.
+
+During takeover, keyboard focus stays on the remote canvas, paste is inserted directly into the
+page, and a selected file (up to 10 MB) is sent directly to the focused file input. Pasted text and
+uploaded file contents are not exposed to the model or written to the conversation.
 
 ## Coworkers, channels, and durable work
 
@@ -99,6 +121,18 @@ coworker; that coworker alone answers the next turn, while the shared transcript
 keeps the handoff legible. Starting a new channel creates a new thread. Each
 coworker continues to use its own computer, browser profile, workspace, and
 granted tools.
+
+Conversation text remains in CopilotKit Intelligence. PostgreSQL stores only
+Kayco-owned conversation metadata: `message_reactions` keeps channel-scoped
+emoji acknowledgements by opaque message id, and `codex_user_preferences`
+keeps each person's optional built-in model and reasoning choices. Membership
+is checked before reaction reads and writes. Unsent draft text is browser-local;
+attachments are deliberately not placed in browser storage.
+
+Team template import is a separate trust boundary. The parser allowlists only
+persona fields, creates fresh private coworkers on the managed endpoint in one
+transaction, and excludes credentials, grants, runtime configuration, and
+conversation data.
 
 The `/work` surface is backed by deployment-owned PostgreSQL records:
 
@@ -150,7 +184,7 @@ MCP servers and skills share the plugin grant table, but they have different own
 
 The curated MCP catalogue contains Atlassian, Box, Slack, Salesforce, and ServiceNow. Custom MCP servers must pass URL checks; unknown tools and custom-server tools are treated as writes unless positively classified as reads.
 
-Every MCP call checks the grant first, then evaluates the same action policy engine with MCP context, then audits the result.
+Every MCP call checks the grant first, then evaluates the same action policy engine with MCP context, then audits the result. MCP descriptions and execution now live on the server, so a coworker can use a granted MCP tool during an unattended run without an open browser tab. When a call matches an approval rule, the durable task is marked as waiting, the server waits for the person's decision, and only the fingerprinted approved request can be consumed on retry. A remote coworker authenticates that callback with a per-coworker token, and the server verifies a short-lived signed assertion before trusting the Bot, actor, task, and channel identities. Only a hash of the long-lived callback token is stored.
 
 The versioned extension SDK packages connectors and declarative skills. External action tools remain MCP tools so extensions cannot create a second, ungoverned execution path. See [extensions.md](extensions.md).
 

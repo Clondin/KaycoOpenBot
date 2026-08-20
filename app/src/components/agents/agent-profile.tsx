@@ -3,6 +3,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { type ReactNode, useState } from "react";
 import { AbstractAvatar } from "@/components/agents/abstract-avatar";
 import { AgentFields } from "@/components/agents/agent-fields";
+import { CallbackTokenPanel } from "@/components/agents/callback-token-panel";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -142,6 +143,13 @@ export function AgentProfile({ agentId }: { agentId: string }) {
         </section>
       )}
 
+      {!isEditing && profile.endpoint && profile.canManage ? (
+        <CallbackTokenPanel
+          agentId={agentId}
+          hasToken={profile.hasCallbackToken}
+        />
+      ) : null}
+
       {actionError ? (
         <p className="text-sm text-destructive" role="alert">
           {actionError.message}
@@ -198,7 +206,7 @@ export function AgentProfile({ agentId }: { agentId: string }) {
 
           {profile.hidden ? (
             <p className="-mt-1 text-xs text-muted-foreground">
-              Hidden from your agents list. This changes nothing for anyone
+              Hidden from your coworkers list. This changes nothing for anyone
               else.
             </p>
           ) : null}

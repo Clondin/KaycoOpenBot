@@ -1,4 +1,6 @@
 import { serve } from "bun";
+import { mintRunAssertion } from "./agents/callback-token";
+import { createAgentFetch } from "./agents/endpoint";
 import { createAgentProfileStore } from "./agents/profile-store";
 import { createRuntimeAgentLoader } from "./agents/runtime-agents";
 import { createApp } from "./app";
@@ -18,11 +20,13 @@ import { websocket as channelSocket } from "./channels/socket";
 import { createThreadIdentity } from "./channels/thread-identity";
 import { CodexAgent } from "./codex/agent";
 import { CodexProcessManager } from "./codex/manager";
+import { createCodexPreferenceStore } from "./codex/preferences";
 import { createCodexThreadStore } from "./codex/thread-store";
 import { createSandboxedStore } from "./components/sandboxed";
 import { createComponentStore } from "./components/store";
 import { createComputerClient } from "./computer/client";
 import { createComputerGateway } from "./computer/gateway";
+import { createLeasedSupervisor } from "./computer/lease";
 import {
   createPolicyStore,
   DEFAULT_ACTION_POLICY,
@@ -42,8 +46,10 @@ import {
   resolveModelApiKey,
 } from "./credentials";
 import { createDatabase } from "./db/client";
+import { resolveListenPort } from "./listen-port";
 import { isTrustedWebSocketOrigin } from "./origin";
 import { createPluginStore } from "./plugins/store";
+import { grantedTools } from "./plugins/tools";
 import { createRunStore } from "./runs/store";
 import {
   createPackageStatusReader,
@@ -116,7 +122,7 @@ const identifyActor: IdentifyActor = async (request) => {
 };
 
 const config = loadConfig();
-const port = Number.parseInt(process.env.PORT ?? "3001", 10);
+const port = resolveListenPort();
 const database = createDatabase(config.databaseUrl);
 await initializeDevActorUser(database, config.devNoAuth);
 const codexConfig = config.codex;
@@ -126,12 +132,16 @@ const codexManager = codexConfig
 const codexThreadStore = codexConfig
   ? createCodexThreadStore(database)
   : undefined;
+const codexPreferences = codexConfig
+  ? createCodexPreferenceStore(database)
+  : undefined;
 const codexAgentProvider: CodexAgentProvider | undefined =
   codexConfig && codexManager && codexThreadStore
     ? {
-        async agentFor(userId, agent) {
+        async agentFor(userId, agent, loadTools) {
           const snapshot = await codexManager.account(userId);
           if (snapshot.account?.type !== "chatgpt") return null;
+          const preferences = await codexPreferences?.get(userId);
           return new CodexAgent({
             userId,
             agentId: agent.id,
@@ -140,6 +150,8 @@ const codexAgentProvider: CodexAgentProvider | undefined =
             manager: codexManager,
             threadStore: codexThreadStore,
             config: codexConfig,
+            loadTools,
+            ...(preferences ? { preferences } : {}),
           });
         },
       }
@@ -190,8 +202,11 @@ await synchronizeTenantPackage(database, tenantPackage);
 const auth = config.auth ? createAuth(config, database) : undefined;
 // One computer each, when a supervisor is configured to give them out. Without one every Bot shares
 // the computer at `baseUrl`, which is what a laptop wants and is honest about being one machine.
-const supervisor = config.computer?.supervisor
+const rawSupervisor = config.computer?.supervisor
   ? createSupervisorClient(config.computer.supervisor)
+  : undefined;
+const supervisor = rawSupervisor
+  ? createLeasedSupervisor(rawSupervisor)
   : undefined;
 const computerClient = config.computer
   ? createComputerClient({
@@ -201,6 +216,8 @@ const computerClient = config.computer
       ...(supervisor
         ? { resolveBaseUrl: (botId: string) => supervisor.locate(botId) }
         : {}),
+      onTiming: (timing) =>
+        console.info(JSON.stringify({ type: "computer-timing", ...timing })),
     })
   : undefined;
 // What Bots may do on their computers. Configuration supplies the deployment's default; an
@@ -413,6 +430,28 @@ const app = createApp(
     identifyActor,
     codexAgentProvider,
     stallGuard,
+    (actorId) => (botId, run) =>
+      grantedTools({
+        store: pluginStore,
+        botId,
+        actorId,
+        approvals: approvalService,
+        ...(run ? { run } : {}),
+      }),
+    (actorId) => (botId, runId, task) =>
+      mintRunAssertion(
+        {
+          botId,
+          actorId,
+          runId,
+          ...(task?.runId ? { taskRunId: task.runId } : {}),
+          ...(task?.channelId ? { channelId: task.channelId } : {}),
+        },
+        config.keyEncryptionKey,
+      ),
+    createAgentFetch({
+      allowPrivateHosts: config.computer?.allowPrivateHosts === true,
+    }),
   ),
   computerClient,
   // The only path to an acting call.
@@ -462,6 +501,7 @@ const app = createApp(
   }),
   workServices,
   codexManager,
+  codexPreferences,
 );
 
 /**
@@ -529,9 +569,16 @@ serve<SocketData>({
       }
       // The session guard, applied by hand because middleware does not run on an upgrade. An
       // unauthenticated socket here would be the whole point of the proxy defeated.
-      const actor = await identifyUser(request).catch(() => null);
+      const actor = await resolveRequestActor(request).catch(() => null);
       if (!actor) {
         return new Response("Sign in first.", { status: 401 });
+      }
+      if (
+        !(await agentProfileStore
+          .get({ id: actor.id, role: actor.role }, streamBotId)
+          .catch(() => null))
+      ) {
+        return new Response("There is no such Bot.", { status: 404 });
       }
       // Located per Bot when there is a supervisor, and the one shared computer when there is not.
       let upstream: string;

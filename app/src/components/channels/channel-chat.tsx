@@ -7,6 +7,10 @@ import {
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toAgentOptions } from "@/components/channels/composer";
+import {
+  attachmentInputPart,
+  type ComposerAttachment,
+} from "@/components/channels/composer";
 import { ConversationView } from "@/components/channels/conversation-view";
 import { TaskRunStatus } from "@/components/tasks/task-run-status";
 import {
@@ -45,9 +49,13 @@ const SEND_WITHOUT_JOIN_AFTER_MS = 1500;
 export function ChannelChat({
   channel,
   runtimeAgentId,
+  searchOpen = false,
+  onCloseSearch,
 }: {
   channel: AgentChannel;
   runtimeAgentId: string;
+  searchOpen?: boolean;
+  onCloseSearch?: () => void;
 }) {
   const queryClient = useQueryClient();
   // The core attaches the frontend tool registry; direct agent runs do not.
@@ -70,6 +78,31 @@ export function ChannelChat({
   activeRunIdRef.current = activeRunId;
   useActiveRun({ runId: activeRunId, channelId: channel.id });
 
+  // CopilotKit opens a follow-up AG-UI run after a browser tool returns, and that internal run does
+  // not repeat the `forwardedProps` supplied to the first run. Inject the current durable task at
+  // the agent boundary so a later server-side MCP call still pauses in the same approval UI.
+  useEffect(() => {
+    agent.use((input, next) => {
+      const runId = activeRunIdRef.current;
+      return next.run({
+        ...input,
+        forwardedProps: {
+          ...(input.forwardedProps ?? {}),
+          ...(runId
+            ? {
+                openbotTaskRunId: runId,
+                openbotChannelId: channel.id,
+              }
+            : {}),
+        },
+      });
+    });
+    return () => {
+      // A registry agent can outlive this component. Old middleware must become inert on unmount.
+      activeRunIdRef.current = undefined;
+    };
+  }, [agent, channel.id]);
+
   // Recover the durable identity after a reload while Intelligence reconnects to the same run.
   useEffect(() => {
     if (activeRunId) return;
@@ -89,14 +122,23 @@ export function ChannelChat({
    * agent has its own messages because joining a fresh thread can temporarily empty the agent.
    */
   const [assigned] = useState(() => takeAssignedWork(channel.id));
-  const [seed] = useState<Message | null>(() => {
-    const pending = assigned?.text ?? takeFirstMessage(channel.id);
-    return pending ? seedMessage(pending, crypto.randomUUID()) : null;
-  });
+  const [firstMessage] = useState(() =>
+    assigned
+      ? { text: assigned.text, attachments: [] as ComposerAttachment[] }
+      : takeFirstMessage(channel.id),
+  );
+  const [seed] = useState<Message | null>(() =>
+    firstMessage
+      ? seedMessage(
+          firstMessage.text,
+          crypto.randomUUID(),
+          firstMessage.attachments,
+        )
+      : null,
+  );
 
   /** Cleared by the send-on-mount effect without restarting it. */
-  const seedRef = useRef(seed);
-  seedRef.current = seed;
+  const seedRef = useRef(firstMessage);
   const assignedRunRef = useRef(assigned?.runId);
 
   /** Promise gate for ordering the first message after the thread join when possible. */
@@ -228,6 +270,7 @@ export function ChannelChat({
     skillInstructions: string[] = [],
     parentRunId?: string,
     existingRunId?: string,
+    attachments: readonly ComposerAttachment[] = [],
   ) => {
     // Wait briefly for the runtime agent instance before adding the message.
     if (!isReadyRef.current) {
@@ -340,11 +383,21 @@ export function ChannelChat({
     }
 
     agent.addMessage({
-      content: trimmed,
+      content:
+        attachments.length === 0
+          ? trimmed
+          : [
+              ...(trimmed ? [{ type: "text" as const, text: trimmed }] : []),
+              ...attachments.map(attachmentInputPart),
+            ],
       id: crypto.randomUUID(),
       role: "user",
     });
-    report(trimmed, null);
+    report(
+      trimmed ||
+        `Shared ${attachments.length} file${attachments.length === 1 ? "" : "s"}.`,
+      null,
+    );
 
     // Providers reject later turns if prior tool calls have no result; repair before sending.
     const repaired = repairUnansweredToolCalls(agent.messages);
@@ -354,7 +407,13 @@ export function ChannelChat({
 
     setRunsInFlight((count) => count + 1);
     try {
-      await copilotkit.runAgent({ agent });
+      await copilotkit.runAgent({
+        agent,
+        forwardedProps: {
+          openbotTaskRunId: runId,
+          openbotChannelId: channel.id,
+        },
+      });
     } catch (error) {
       const message =
         error instanceof Error
@@ -386,13 +445,20 @@ export function ChannelChat({
     skillInstructions: string[] = [],
     parentRunId?: string,
     existingRunId?: string,
+    attachments: readonly ComposerAttachment[] = [],
   ) => {
     const trimmed = text.trim();
-    if (!trimmed) return;
+    if (!trimmed && attachments.length === 0) return;
 
     setTurnsInFlight((count) => count + 1);
     try {
-      await deliver(trimmed, skillInstructions, parentRunId, existingRunId);
+      await deliver(
+        trimmed,
+        skillInstructions,
+        parentRunId,
+        existingRunId,
+        attachments,
+      );
     } finally {
       setTurnsInFlight((count) => count - 1);
     }
@@ -486,10 +552,11 @@ export function ChannelChat({
       const existingRunId = assignedRunRef.current;
       assignedRunRef.current = undefined;
       await sayRef.current(
-        typeof pending.content === "string" ? pending.content : "",
+        pending.text,
         [],
         undefined,
         existingRunId,
+        pending.attachments,
       );
     })();
 
@@ -503,6 +570,7 @@ export function ChannelChat({
         busy={agent.isRunning}
         // The `/` menu exposes only skills granted to this Bot.
         commands={skillCommands}
+        channelId={channel.id}
         // Readiness is handled by `say`; deletion is the only disabled-chat state.
         disabled={!channel.active}
         messages={transcriptMessages(agent.messages, seed)}
@@ -544,7 +612,13 @@ export function ChannelChat({
               Boolean(instruction),
             );
 
-          await say(draft.text, skillInstructions);
+          await say(
+            draft.text,
+            skillInstructions,
+            undefined,
+            undefined,
+            draft.attachments,
+          );
         }}
         /**
          * Stop through the core so the abort signal reaches frontend tools; `say` repairs any
@@ -580,6 +654,9 @@ export function ChannelChat({
          * above.
          */
         queueWhileBusy
+        draftKey={`channel:${channel.id}`}
+        searchOpen={searchOpen}
+        onCloseSearch={onCloseSearch}
         /*
          * The run, not the turn. Stop reaches a run through the core's abort controller, and that
          * controller does not exist until `say` has finished waiting for the runtime agent — so

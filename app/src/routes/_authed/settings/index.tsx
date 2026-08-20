@@ -17,14 +17,25 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { Button } from "@/components/ui/button";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   cancelCodexLogin,
   capabilitiesQueryOptions,
   codexAccountQueryOptions,
   codexKeys,
   codexLimitsQueryOptions,
+  codexModelsQueryOptions,
+  codexPreferencesQueryOptions,
   codexUsageQueryOptions,
   disconnectCodexAccount,
   startCodexDeviceLogin,
+  updateCodexPreferences,
+  type CodexPreferences,
   type CodexDeviceLogin,
   type RateLimitWindow,
 } from "@/lib/codex/queries";
@@ -44,6 +55,8 @@ function RouteComponent() {
   const connected = account.data?.connected === true;
   const limits = useQuery(codexLimitsQueryOptions(connected));
   const usage = useQuery(codexUsageQueryOptions(connected));
+  const models = useQuery(codexModelsQueryOptions(connected));
+  const preferences = useQuery(codexPreferencesQueryOptions(connected));
   const action = useMutation({
     mutationFn: (operation: () => Promise<unknown>) => operation(),
     onSuccess: () => {
@@ -55,8 +68,24 @@ function RouteComponent() {
         error instanceof Error ? error.message : "That action did not work.",
       ),
   });
+  const preferenceAction = useMutation({
+    mutationFn: updateCodexPreferences,
+    onSuccess: (next) => {
+      queryClient.setQueryData(codexKeys.preferences(), {
+        preferences: next,
+        effortLevels: ["low", "medium", "high", "xhigh", "max"],
+      });
+    },
+  });
   const limit =
     limits.data?.rateLimitsByLimitId?.codex ?? limits.data?.rateLimits;
+  const modelChoices = modelOptions(models.data?.data ?? []);
+  const selectedPreferences = preferences.data?.preferences;
+  const effortLevels = preferences.data?.effortLevels ?? [];
+  const savePreference = (patch: Partial<CodexPreferences>) => {
+    if (!selectedPreferences) return;
+    preferenceAction.mutate({ ...selectedPreferences, ...patch });
+  };
 
   /*
    * The measurements that used to be written out here now live in `PageShell`, which Skills, Admin
@@ -189,7 +218,7 @@ function RouteComponent() {
             </Item>
           ) : null}
 
-          {connected && limit ? (
+          {connected && (limit || usage.data?.summary) ? (
             <Item size="sm" variant="muted">
               <ItemContent>
                 <ItemTitle>Codex allowance</ItemTitle>
@@ -197,25 +226,124 @@ function RouteComponent() {
                   {usage.data?.summary?.lifetimeTokens
                     ? `${usage.data.summary.lifetimeTokens.toLocaleString()} lifetime tokens reported. `
                     : ""}
-                  Usage refreshes once a minute.
+                  Usage refreshes once a minute. ChatGPT subscriptions do not
+                  report a reliable per-turn dollar cost, so Kayco does not
+                  invent one.
                 </ItemDescription>
-                <div className="mt-2 grid gap-2 sm:grid-cols-2">
-                  <UsageWindow label="Primary window" window={limit.primary} />
-                  <UsageWindow
-                    label="Secondary window"
-                    window={limit.secondary}
-                  />
-                </div>
+                {limit ? (
+                  <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                    <UsageWindow
+                      label="Primary window"
+                      window={limit.primary}
+                    />
+                    <UsageWindow
+                      label="Secondary window"
+                      window={limit.secondary}
+                    />
+                  </div>
+                ) : null}
               </ItemContent>
             </Item>
           ) : null}
 
-          {problem || account.isError || limits.isError || usage.isError ? (
+          {connected && selectedPreferences ? (
+            <Item size="sm" variant="muted">
+              <ItemContent>
+                <ItemTitle>Model and reasoning</ItemTitle>
+                <ItemDescription>
+                  These choices apply to built-in coworkers that use your
+                  connected Codex account. External AG-UI coworkers keep their
+                  own runtime settings.
+                </ItemDescription>
+                <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                  <div className="grid gap-1 text-xs">
+                    <span className="font-medium">Model</span>
+                    <Select
+                      disabled={preferenceAction.isPending}
+                      onValueChange={(value) =>
+                        savePreference({
+                          model: value === "__default__" ? null : value,
+                        })
+                      }
+                      value={selectedPreferences.model ?? "__default__"}
+                    >
+                      <SelectTrigger
+                        aria-label="Codex model"
+                        className="w-full"
+                      >
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="__default__">
+                          Deployment default
+                        </SelectItem>
+                        {modelChoices.map((model) => (
+                          <SelectItem key={model.id} value={model.id}>
+                            {model.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="grid gap-1 text-xs">
+                    <span className="font-medium">Reasoning effort</span>
+                    <Select
+                      disabled={preferenceAction.isPending}
+                      onValueChange={(value) =>
+                        savePreference({
+                          effort:
+                            value === "__default__"
+                              ? null
+                              : (value as CodexPreferences["effort"]),
+                        })
+                      }
+                      value={selectedPreferences.effort ?? "__default__"}
+                    >
+                      <SelectTrigger
+                        aria-label="Codex reasoning effort"
+                        className="w-full"
+                      >
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="__default__">Default</SelectItem>
+                        {effortLevels
+                          .filter((level): level is NonNullable<typeof level> =>
+                            Boolean(level),
+                          )
+                          .map((level) => (
+                            <SelectItem key={level} value={level}>
+                              {level === "xhigh"
+                                ? "Extra high"
+                                : level[0].toUpperCase() + level.slice(1)}
+                            </SelectItem>
+                          ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+                {preferenceAction.error ? (
+                  <p className="mt-2 text-xs text-destructive" role="alert">
+                    {preferenceAction.error.message}
+                  </p>
+                ) : null}
+              </ItemContent>
+            </Item>
+          ) : null}
+
+          {problem ||
+          account.isError ||
+          limits.isError ||
+          usage.isError ||
+          models.isError ||
+          preferences.isError ? (
             <p className="px-3 text-sm text-destructive" role="alert">
               {problem ??
                 account.error?.message ??
                 limits.error?.message ??
                 usage.error?.message ??
+                models.error?.message ??
+                preferences.error?.message ??
                 "Codex could not be loaded."}
             </p>
           ) : null}
@@ -223,6 +351,25 @@ function RouteComponent() {
       </PageSection>
     </PageShell>
   );
+}
+
+function modelOptions(data: unknown[]) {
+  const choices = new Map<string, string>();
+  for (const item of data) {
+    if (!item || typeof item !== "object") continue;
+    const record = item as Record<string, unknown>;
+    const id = [record.id, record.model, record.slug].find(
+      (value): value is string =>
+        typeof value === "string" && Boolean(value.trim()),
+    );
+    if (!id) continue;
+    const label = [record.displayName, record.name, record.label].find(
+      (value): value is string =>
+        typeof value === "string" && Boolean(value.trim()),
+    );
+    choices.set(id, label ?? id);
+  }
+  return [...choices].map(([id, label]) => ({ id, label }));
 }
 
 function UsageWindow({

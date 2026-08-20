@@ -4,7 +4,13 @@ import {
   type RunAgentInput,
 } from "@ag-ui/client";
 import { Observable } from "rxjs";
+import { z } from "zod";
 import type { DeploymentConfig } from "../config";
+import {
+  type GrantedTool,
+  toolRunContext,
+  type ToolRunContext,
+} from "../plugins/tools";
 import {
   CODEX_REQUEST_NOT_HANDLED,
   type CodexAgentClient,
@@ -12,6 +18,7 @@ import {
   CodexRpcError,
 } from "./protocol";
 import type { CodexThreadStore } from "./thread-store";
+import type { CodexPreferences } from "./preferences";
 
 type ThreadResponse = { thread: { id: string } };
 type TurnResponse = { turn: { id: string } };
@@ -31,6 +38,11 @@ export type CodexAgentOptions = {
   manager: CodexClientLeaseManager;
   threadStore: CodexThreadStore;
   config: NonNullable<DeploymentConfig["codex"]>;
+  preferences?: CodexPreferences;
+  /** Governed deployment tools execute here; browser and component tools stay with the surface. */
+  tools?: GrantedTool[];
+  /** Preferred over `tools`: reloads grants and binds approvals to this durable task. */
+  loadTools?: (run?: ToolRunContext) => Promise<GrantedTool[]>;
 };
 
 /** AG-UI adapter for a built-in coworker driven by the signed-in person's Codex subscription. */
@@ -54,7 +66,10 @@ export class CodexAgent extends AbstractAgent {
 
       void this.options.manager
         .withClient(this.options.userId, async (client) => {
-          const session = await this.thread(client, input);
+          const tools = this.options.loadTools
+            ? await this.options.loadTools(toolRunContext(input.forwardedProps))
+            : (this.options.tools ?? []);
+          const session = await this.thread(client, input, tools);
           active = { client, threadId: session.threadId };
           await this.turn(
             client,
@@ -64,6 +79,7 @@ export class CodexAgent extends AbstractAgent {
               active = { client, threadId: session.threadId, turnId };
             },
             subscriber,
+            tools,
           );
         })
         .then(() => {
@@ -109,7 +125,11 @@ export class CodexAgent extends AbstractAgent {
     });
   }
 
-  private async thread(client: CodexAgentClient, input: RunAgentInput) {
+  private async thread(
+    client: CodexAgentClient,
+    input: RunAgentInput,
+    tools: GrantedTool[],
+  ) {
     const existing = await this.options.threadStore.get(
       this.options.userId,
       this.options.agentId,
@@ -120,6 +140,7 @@ export class CodexAgent extends AbstractAgent {
         await client.request<ThreadResponse>("thread/resume", {
           threadId: existing,
           ...this.threadSettings(),
+          dynamicTools: dynamicTools(input, tools),
         });
         return { threadId: existing, restored: true };
       } catch (error) {
@@ -131,7 +152,7 @@ export class CodexAgent extends AbstractAgent {
     const created = await client.request<ThreadResponse>("thread/start", {
       ...this.threadSettings(),
       ephemeral: false,
-      dynamicTools: dynamicTools(input),
+      dynamicTools: dynamicTools(input, tools),
     });
     if (!created.thread?.id) throw new Error("Codex did not create a thread.");
     await this.options.threadStore.set(
@@ -144,10 +165,10 @@ export class CodexAgent extends AbstractAgent {
   }
 
   private threadSettings() {
+    const model =
+      this.options.preferences?.model ?? this.options.config.defaultModel;
     return {
-      ...(this.options.config.defaultModel
-        ? { model: this.options.config.defaultModel }
-        : {}),
+      ...(model ? { model } : {}),
       approvalPolicy: "never",
       sandbox: "readOnly",
       developerInstructions: [
@@ -175,6 +196,7 @@ export class CodexAgent extends AbstractAgent {
     session: { threadId: string; restored: boolean },
     setTurnId: (turnId: string) => void,
     subscriber: { closed: boolean; next(event: BaseEvent): void },
+    tools: GrantedTool[],
   ) {
     let turnId: string | undefined;
     let messageId: string | undefined;
@@ -275,7 +297,8 @@ export class CodexAgent extends AbstractAgent {
         };
       }
 
-      delegatedTool = true;
+      const deploymentTool = tools.find((tool) => tool.name === call.tool);
+      delegatedTool = !deploymentTool;
       closeText();
       if (!subscriber.closed) {
         const parentMessageId = messageId ?? `codex-message-${input.runId}`;
@@ -294,6 +317,23 @@ export class CodexAgent extends AbstractAgent {
           type: "TOOL_CALL_END",
           toolCallId: call.callId,
         } as BaseEvent);
+      }
+
+      if (deploymentTool) {
+        const content = await deploymentTool.execute(call.arguments ?? {});
+        if (!subscriber.closed) {
+          subscriber.next({
+            type: "TOOL_CALL_RESULT",
+            messageId: `${call.callId}-result`,
+            toolCallId: call.callId,
+            content,
+            role: "tool",
+          } as BaseEvent);
+        }
+        return {
+          success: true,
+          contentItems: [{ type: "inputText", text: content }],
+        };
       }
 
       queueMicrotask(() => {
@@ -327,6 +367,9 @@ export class CodexAgent extends AbstractAgent {
             textElements: [],
           },
         ],
+        ...(this.options.preferences?.effort
+          ? { effort: this.options.preferences.effort }
+          : {}),
       });
       turnId = started.turn?.id;
       if (!turnId) throw new Error("Codex did not start a turn.");
@@ -340,14 +383,32 @@ export class CodexAgent extends AbstractAgent {
   }
 }
 
-function dynamicTools(input: RunAgentInput) {
-  return (input.tools ?? []).map((tool) => ({
-    type: "function",
-    name: tool.name,
-    description: tool.description || `Run the OpenBot ${tool.name} tool.`,
-    inputSchema: tool.parameters ?? { type: "object", properties: {} },
-    deferLoading: false,
-  }));
+function dynamicTools(
+  input: RunAgentInput,
+  deploymentTools: GrantedTool[] = [],
+) {
+  const definitions = new Map(
+    (input.tools ?? []).map((tool) => [
+      tool.name,
+      {
+        type: "function",
+        name: tool.name,
+        description: tool.description || `Run the OpenBot ${tool.name} tool.`,
+        inputSchema: tool.parameters ?? { type: "object", properties: {} },
+        deferLoading: false,
+      },
+    ]),
+  );
+  for (const tool of deploymentTools) {
+    definitions.set(tool.name, {
+      type: "function",
+      name: tool.name,
+      description: tool.description,
+      inputSchema: z.toJSONSchema(tool.parameters),
+      deferLoading: false,
+    });
+  }
+  return [...definitions.values()];
 }
 
 function latestMessageId(input: RunAgentInput) {
@@ -379,7 +440,8 @@ function messageText(content: unknown): string {
       .map((part) => {
         if (typeof part === "string") return part;
         const record = asRecord(part);
-        return typeof record.text === "string" ? record.text : "";
+        if (typeof record.text === "string") return record.text;
+        return attachmentText(record);
       })
       .filter(Boolean)
       .join("\n");
@@ -387,6 +449,43 @@ function messageText(content: unknown): string {
   return content === null || content === undefined
     ? ""
     : JSON.stringify(content);
+}
+
+const MAX_INLINE_ATTACHMENT_CHARACTERS = 100_000;
+
+function attachmentText(part: Record<string, unknown>) {
+  const type = typeof part.type === "string" ? part.type : "file";
+  const metadata = asRecord(part.metadata);
+  const source = asRecord(part.source);
+  const filename =
+    typeof part.filename === "string"
+      ? part.filename
+      : typeof metadata.filename === "string"
+        ? metadata.filename
+        : "attachment";
+  const mimeType =
+    typeof part.mimeType === "string"
+      ? part.mimeType
+      : typeof source.mimeType === "string"
+        ? source.mimeType
+        : "application/octet-stream";
+  const data =
+    typeof part.data === "string"
+      ? part.data
+      : source.type === "data" && typeof source.value === "string"
+        ? source.value
+        : null;
+
+  if (data && mimeType.startsWith("text/")) {
+    const decoded = Buffer.from(data, "base64")
+      .toString("utf8")
+      .slice(0, MAX_INLINE_ATTACHMENT_CHARACTERS);
+    return `Attached text file ${filename} (${mimeType}):\n${decoded}`;
+  }
+  if (["image", "audio", "video", "document", "binary"].includes(type)) {
+    return `[Attached ${type}: ${filename} (${mimeType})]`;
+  }
+  return "";
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

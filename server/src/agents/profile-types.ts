@@ -20,6 +20,8 @@ export type AgentProfile = {
   endpoint: string | null;
   /** Whether a key is set for it. Never the key. */
   hasAuth: boolean;
+  /** Whether this agent has a credential for calling governed tools back. Never the token. */
+  hasCallbackToken: boolean;
 };
 
 export type CreateAgentInput = Pick<

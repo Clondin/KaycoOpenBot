@@ -32,7 +32,7 @@ All four Intelligence values are required together. Missing any of them stops se
 
 | Variable             | Default                            | Meaning                                                             |
 | -------------------- | ---------------------------------- | ------------------------------------------------------------------- |
-| `PORT`               | `3001`                             | API server port.                                                    |
+| `SERVER_PORT`        | `3001`                             | API server port. `PORT` is the legacy fallback.                     |
 | `NODE_ENV`           | unset                              | `production` enables startup refusals for local-only settings.      |
 | `TENANT_PACKAGE_DIR` | `../examples/fintech`              | Tenant package directory, resolved from `server/`.                  |
 | `DEPLOYMENT_ID`      | the tenant package's id            | Names this deployment inside a shared Intelligence project.          |
@@ -46,6 +46,10 @@ All four Intelligence values are required together. Missing any of them stops se
 | `XAI_API_KEY`        | unset                              | xAI key when `BOT_PROVIDER=xai`; Grok 4.6 is supported.             |
 | `BOT_MODEL`          | provider default from Bot code/env | Model used by the shipped Bots.                                     |
 | `BOT_RESPONSES_API`  | `false`                            | Makes `agent-langgraph` use the OpenAI Responses API.               |
+| `OPENBOT_TOOL_URL`   | `http://localhost:3001/api/agent-tools/call` | Server callback used by `agent-langgraph` for governed MCP calls.   |
+| `AGENT_TOOL_TOKEN`   | unset                              | Callback credential presented by `agent-langgraph`. Prefer a per-coworker token; the shared deployment value remains for the shipped Bot during migration. |
+
+Remote coworker callback tokens are generated from the coworker's profile and shown once. Put that value in the remote agent's `AGENT_TOOL_TOKEN` setting and point `OPENBOT_TOOL_URL` at this deployment's `/api/agent-tools/call` route. The server stores only the token hash and also verifies the short-lived signed run assertion carried in `forwardedProps.openbotRun`.
 
 ## OpenAI-compatible endpoints
 
@@ -115,7 +119,7 @@ upgrade before rolling it out.
 | `BETTER_AUTH_CROSS_SITE_COOKIES` | Set `true` for HTTPS frontends hosted on a different site from the API.             |
 | `BETTER_AUTH_SECRET`         | At least 32 characters. Required with Google OAuth.                                    |
 | `BETTER_AUTH_URL`            | Public API server base URL. Required with Google OAuth.                                |
-| `TRUSTED_ORIGINS`            | Comma-separated app origins accepted by the API.                                       |
+| `TRUSTED_ORIGINS`            | Comma-separated app origins accepted by the API. Unset outside production, `http://localhost:3010`. |
 | `INITIAL_ADMIN_EMAILS`       | Comma-separated users seeded as administrators.                                        |
 
 Google OAuth client id and secret must be configured together. If Google OAuth is configured, `BETTER_AUTH_SECRET` and `BETTER_AUTH_URL` are also required.

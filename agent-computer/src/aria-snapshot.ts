@@ -194,15 +194,19 @@ function toElement(
 }
 
 /** Turn an aria snapshot into the flat element list the tool contract publishes. */
-export function parseAriaSnapshot(yaml: string): {
+export function parseAriaSnapshot(
+  yaml: string,
+  options: { limit?: number } = {},
+): {
   elements: SnapshotElement[];
   truncated: boolean;
 } {
   const elements: SnapshotElement[] = [];
+  const limit = options.limit ?? SNAPSHOT_ELEMENT_LIMIT;
   let truncated = false;
 
   const push = (element: SnapshotElement): void => {
-    if (elements.length >= SNAPSHOT_ELEMENT_LIMIT) {
+    if (elements.length >= limit) {
       truncated = true;
       return;
     }

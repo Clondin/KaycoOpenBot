@@ -120,6 +120,15 @@ describe("parseAriaSnapshot, against captured output", () => {
     expect(elements).toHaveLength(200);
     expect(truncated).toBe(true);
   });
+
+  test("a caller can request a smaller observation", () => {
+    const { elements, truncated } = parseAriaSnapshot(
+      '- button "One" [ref=e1]\n- button "Two" [ref=e2]',
+      { limit: 1 },
+    );
+    expect(elements.map((element) => element.name)).toEqual(["One"]);
+    expect(truncated).toBe(true);
+  });
 });
 
 describe("values a real parser handles and a pattern got wrong", () => {

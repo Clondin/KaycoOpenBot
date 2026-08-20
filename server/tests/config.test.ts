@@ -37,6 +37,16 @@ describe("deployment configuration", () => {
       new URL("http://localhost:4200/ag-ui"),
     );
     expect(config.tenantPackageDirectory).toBe("../examples/fintech");
+    expect(config.agentToolToken).toBeUndefined();
+  });
+
+  test("loads the legacy shipped-Bot tool callback credential when configured", () => {
+    const config = loadConfig({
+      ...baseEnvironment,
+      AGENT_TOOL_TOKEN: "legacy-agent-tool-token",
+    });
+
+    expect(config.agentToolToken).toBe("legacy-agent-tool-token");
   });
 
   test("allows deployment without an authentication provider", () => {
@@ -138,7 +148,7 @@ describe("deployment configuration", () => {
         clientId: "google-client-id",
         clientSecret: "google-client-secret",
       },
-      trustedOrigins: ["http://localhost:3000"],
+      trustedOrigins: ["http://localhost:3010"],
       initialAdminEmails: ["admin@openbot.test", "owner@openbot.test"],
       crossSiteCookies: false,
     });

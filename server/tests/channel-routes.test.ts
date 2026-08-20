@@ -65,6 +65,13 @@ function fakeStore(
       calls.push(["get", receivedActor, id]);
       return channel({ id });
     },
+    async reactions(receivedActor, id, messageIds) {
+      calls.push(["reactions", receivedActor, id, messageIds]);
+      return [];
+    },
+    async setReaction(receivedActor, id, messageId, emoji, active) {
+      calls.push(["setReaction", receivedActor, id, messageId, emoji, active]);
+    },
   };
 
   return Object.assign(base, overrides, { calls });
@@ -150,9 +157,19 @@ describe("channel routes", () => {
       body: JSON.stringify({ agentIds: ["agent-1"] }),
     });
     const fetched = await app.request("http://openbot.test/channel-1");
+    const reactions = await app.request(
+      "http://openbot.test/channel-1/reactions/query",
+      { method: "POST" },
+    );
+    const reacted = await app.request(
+      "http://openbot.test/channel-1/reactions",
+      { method: "PUT" },
+    );
 
     expect(created.status).toBe(401);
     expect(fetched.status).toBe(401);
+    expect(reactions.status).toBe(401);
+    expect(reacted.status).toBe(401);
     expect(store.calls).toEqual([]);
   });
 
@@ -205,6 +222,69 @@ describe("channel routes", () => {
     });
     expect(fetched.status).toBe(200);
     expect(await json(fetched)).toEqual({ channel: channel() });
+  });
+
+  test("reads and updates allowlisted message reactions", async () => {
+    const store = fakeStore();
+    const app = appFor(store);
+
+    const queried = await app.request(
+      "http://openbot.test/channel-1/reactions/query",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ messageIds: [" message-1 ", "message-1"] }),
+      },
+    );
+    const updated = await app.request(
+      "http://openbot.test/channel-1/reactions",
+      {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          messageId: "message-1",
+          emoji: "❤️",
+          active: true,
+        }),
+      },
+    );
+
+    expect(queried.status).toBe(200);
+    expect(await json(queried)).toEqual({ reactions: [] });
+    expect(updated.status).toBe(204);
+    expect(store.calls).toContainEqual([
+      "reactions",
+      actor,
+      "channel-1",
+      ["message-1"],
+    ]);
+    expect(store.calls).toContainEqual([
+      "setReaction",
+      actor,
+      "channel-1",
+      "message-1",
+      "❤️",
+      true,
+    ]);
+  });
+
+  test("rejects unsupported reactions before calling the store", async () => {
+    const store = fakeStore();
+    const response = await appFor(store).request(
+      "http://openbot.test/channel-1/reactions",
+      {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          messageId: "message-1",
+          emoji: "🔥",
+          active: true,
+        }),
+      },
+    );
+
+    expect(response.status).toBe(400);
+    expect(store.calls).toEqual([]);
   });
 
   test.each([
@@ -515,6 +595,50 @@ describe("channel store integration", () => {
     createdChannelIds.push(created.id);
 
     expect(await persistentStore.get(actor, created.id)).toEqual(created);
+  });
+
+  test("keeps reactions durable and private to channel members", async () => {
+    const actor = await createPersistentUser();
+    const outsider = await createPersistentUser();
+    const agentId = await createPersistentAgent({
+      name: "Reaction agent",
+      owner: actor,
+    });
+    const created = await persistentStore.create(actor, [agentId]);
+    createdChannelIds.push(created.id);
+
+    await persistentStore.setReaction(
+      actor,
+      created.id,
+      "message-1",
+      "👍",
+      true,
+    );
+    await persistentStore.setReaction(
+      actor,
+      created.id,
+      "message-1",
+      "👍",
+      true,
+    );
+
+    expect(
+      await persistentStore.reactions(actor, created.id, ["message-1"]),
+    ).toEqual([{ messageId: "message-1", emoji: "👍", count: 1, mine: true }]);
+    await expect(
+      persistentStore.reactions(outsider, created.id, ["message-1"]),
+    ).rejects.toBeInstanceOf(ChannelNotFoundError);
+
+    await persistentStore.setReaction(
+      actor,
+      created.id,
+      "message-1",
+      "👍",
+      false,
+    );
+    expect(
+      await persistentStore.reactions(actor, created.id, ["message-1"]),
+    ).toEqual([]);
   });
 
   test("does not expose a member's channel to another user through public agents", async () => {
