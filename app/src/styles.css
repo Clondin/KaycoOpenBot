@@ -229,3 +229,62 @@ body {
 .tool-line[open] .tool-line-chevron {
   transform: rotate(90deg);
 }
+
+/*
+ * The thinking orb: a small gradient sphere that breathes while the Bot works.
+ *
+ * Two elements on purpose. The halo scales and fades — the breath — while the orb inside spins its
+ * conic gradient. One element cannot do both: `transform` carries either the rotation or the
+ * scale, and merging them into one keyframe ties the breath's rhythm to the spin's.
+ *
+ * The colours are fixed rather than themed. This app's `--primary` is monochrome by design, and a
+ * grey orb next to grey text reads as a smudge; a violet-to-cyan turn is the one deliberate accent,
+ * and the same gradient works on both light and dark ground. Only `transform` and `opacity`
+ * animate, so the compositor owns the whole effect.
+ */
+.thinking-orb-halo {
+  display: inline-flex;
+  animation: thinking-orb-breathe 2s ease-in-out infinite;
+}
+
+.thinking-orb {
+  display: inline-flex;
+  width: 0.875rem;
+  height: 0.875rem;
+  border-radius: 9999px;
+  background: conic-gradient(
+    from 0deg,
+    oklch(0.62 0.21 285),
+    oklch(0.68 0.16 240),
+    oklch(0.8 0.13 200),
+    oklch(0.62 0.21 285)
+  );
+  box-shadow: 0 0 10px 1px oklch(0.65 0.18 260 / 35%);
+  animation: thinking-orb-spin 2.8s linear infinite;
+}
+
+@keyframes thinking-orb-spin {
+  to {
+    transform: rotate(1turn);
+  }
+}
+
+@keyframes thinking-orb-breathe {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 0.85;
+  }
+  50% {
+    transform: scale(1.18);
+    opacity: 1;
+  }
+}
+
+/* A still orb for reduced-motion users: present, glowing, not moving. */
+@media (prefers-reduced-motion: reduce) {
+  .thinking-orb-halo,
+  .thinking-orb {
+    animation: none;
+  }
+}

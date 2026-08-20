@@ -1,21 +1,31 @@
 import type { Message } from "@ag-ui/core";
 import {
+  IconChevronDown,
+  IconChevronUp,
+  IconSearch,
+  IconX,
+} from "@tabler/icons-react";
+import {
   type ReactNode,
   useCallback,
   useEffect,
   useRef,
   useState,
 } from "react";
+import { searchableMessageIds } from "@/components/channels/chat-messages";
 import { ChatTranscript } from "@/components/channels/chat-transcript";
 import {
   type AgentOption,
   type CommandOption,
   Composer,
   type ComposerDraft,
+  type ComposerInsertion,
   type QueueAction,
   type QueuedMessage,
   reduceQueue,
 } from "@/components/channels/composer";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 
 export function ConversationView({
   messages,
@@ -30,6 +40,16 @@ export function ConversationView({
   queueWhileBusy = false,
   onSubmit,
   onStop,
+  agentId,
+  assistantName,
+  messageTimes,
+  emptyState,
+  restoring,
+  historyNotice,
+  draftKey,
+  searchOpen = false,
+  onCloseSearch,
+  onRetryLatest,
 }: {
   messages: readonly Message[];
   busy?: boolean;
@@ -65,16 +85,29 @@ export function ConversationView({
    * that will still be here when the turn ends. The compose screen creates the channel on send and
    * navigates away; a message parked there would go down with the unmount, and a message that
    * silently disappears is a worse answer than a send button that will not go.
-   *
-   * The other place somebody talks to a Bot, the direct `/bot` chat, does not get this either, and
-   * not by a decision made here: that screen draws CopilotKit's own chat rather than this composer,
-   * so there is nothing on it for this flag to reach. Giving it the same affordance means either
-   * moving it onto this composer or asking for it upstream, and neither is a queue.
    */
   queueWhileBusy?: boolean;
   onSubmit: (draft: ComposerDraft) => void | Promise<void>;
   /** Stop the Bot mid-answer; forwarded to turn the send button into a stop button. */
   onStop?: () => void;
+  /** Identity for the transcript's turn headers: avatar seed and display name. */
+  agentId?: string;
+  assistantName?: string;
+  /** First-seen times by message id; sparse, and honest about being sparse. */
+  messageTimes?: Readonly<Record<string, number>>;
+  /** Drawn when the conversation is confirmed empty: a greeting, not a void. */
+  emptyState?: ReactNode;
+  /** History restore is still in flight; the transcript shows placeholders. */
+  restoring?: boolean;
+  /** Earlier messages could not be loaded. */
+  historyNotice?: string;
+  /** Browser-local key for keeping unsent text across a reload. */
+  draftKey?: string;
+  /** The in-conversation search bar is open; owned by the route so `?find` survives a reload. */
+  searchOpen?: boolean;
+  onCloseSearch?: () => void;
+  /** Re-run the latest exchange; surfaces as Retry on the newest answer and on a stopped turn. */
+  onRetryLatest?: () => void;
 }) {
   /*
    * THE QUEUE LIVES HERE BECAUSE BOTH HALVES OF IT DO.
@@ -111,6 +144,66 @@ export function ConversationView({
    */
   const [running, setRunning] = useState(false);
   const inFlight = pending || running;
+
+  /** What Quote and Edit put into the composer; an id per request so repeats land. */
+  const [insertion, setInsertion] = useState<ComposerInsertion | undefined>();
+
+  const [searchQuery, setSearchQuery] = useState("");
+  const [activeSearchIndex, setActiveSearchIndex] = useState(0);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const searchMatches = searchOpen
+    ? searchableMessageIds(messages, searchQuery)
+    : [];
+  const boundedSearchIndex =
+    searchMatches.length === 0
+      ? 0
+      : Math.min(activeSearchIndex, searchMatches.length - 1);
+  const activeSearchMessageId = searchMatches[boundedSearchIndex];
+
+  useEffect(() => {
+    if (searchOpen) searchInputRef.current?.focus();
+  }, [searchOpen]);
+
+  const moveSearch = (direction: -1 | 1) => {
+    if (searchMatches.length === 0) return;
+    setActiveSearchIndex(
+      (current) =>
+        (current + direction + searchMatches.length) % searchMatches.length,
+    );
+  };
+
+  const closeSearch = () => {
+    setSearchQuery("");
+    setActiveSearchIndex(0);
+    onCloseSearch?.();
+  };
+
+  const editMessage = useCallback((text: string) => {
+    setInsertion({ id: crypto.randomUUID(), mode: "replace", text });
+  }, []);
+
+  /**
+   * PLAIN TEXT ON PURPOSE. A person's bubble renders exactly what they typed, so a quote dressed in
+   * markdown — italics markers around the label — would show its own syntax on screen. The `>`
+   * prefix is kept because it reads as quoting even unstyled, in an email-thread way; the label
+   * stays a plain sentence.
+   */
+  const quoteMessage = useCallback(
+    (text: string, role: "user" | "assistant") => {
+      const label =
+        role === "assistant" ? (assistantName ?? "Coworker") : "You";
+      const quoted = text
+        .split("\n")
+        .map((line) => `> ${line}`)
+        .join("\n");
+      setInsertion({
+        id: crypto.randomUUID(),
+        mode: "append",
+        text: `${label} wrote:\n${quoted}\n\n`,
+      });
+    },
+    [assistantName],
+  );
 
   /**
    * Every change to the queue goes through here, so the ref and the state can never disagree.
@@ -201,21 +294,97 @@ export function ConversationView({
          * begin with a slash, and its message rows are memoised on primitives — handing them an
          * array would give every message a new prop identity on each refetch and re-render the whole
          * conversation to change nothing.
+         *
+         * The search match ids travel the same way, for the same reason.
          */}
         <ChatTranscript
+          activeSearchMessageId={searchOpen ? activeSearchMessageId : undefined}
+          agentId={agentId}
+          assistantName={assistantName}
           busy={busy}
           commandNames={(commands ?? [])
             .map((command) => command.name)
             .join(",")}
+          emptyState={emptyState}
+          historyNotice={historyNotice}
           messages={messages}
+          messageTimes={messageTimes}
+          onEdit={editMessage}
+          onQuote={quoteMessage}
           onRemoveQueued={(id) => {
             apply({ id, type: "remove" });
           }}
+          onRetryLatest={onRetryLatest}
           queued={queued}
+          restoring={restoring}
+          searchMatchIds={searchOpen ? searchMatches.join(",") : ""}
           {...(stopped ? { stopped } : {})}
         />
       </div>
       <div className="max-w-2xl mx-auto w-full px-0 pb-4 shrink-0">
+        {searchOpen ? (
+          <div className="mb-2 flex items-center gap-1 rounded-xl border bg-card p-1.5 shadow-sm">
+            <IconSearch className="ml-1 size-4 shrink-0 text-muted-foreground" />
+            <Input
+              aria-label="Search this conversation"
+              className="h-8 border-0 shadow-none focus-visible:ring-0"
+              onChange={(event) => {
+                setSearchQuery(event.target.value);
+                setActiveSearchIndex(0);
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Escape") {
+                  closeSearch();
+                } else if (event.key === "Enter") {
+                  event.preventDefault();
+                  moveSearch(event.shiftKey ? -1 : 1);
+                }
+              }}
+              placeholder="Search messages"
+              ref={searchInputRef}
+              value={searchQuery}
+            />
+            <span
+              className="min-w-14 text-center text-muted-foreground text-xs"
+              role="status"
+            >
+              {searchQuery.trim()
+                ? searchMatches.length
+                  ? `${boundedSearchIndex + 1} of ${searchMatches.length}`
+                  : "No matches"
+                : ""}
+            </span>
+            <Button
+              aria-label="Previous match"
+              disabled={searchMatches.length === 0}
+              onClick={() => moveSearch(-1)}
+              size="icon-sm"
+              type="button"
+              variant="ghost"
+            >
+              <IconChevronUp />
+            </Button>
+            <Button
+              aria-label="Next match"
+              disabled={searchMatches.length === 0}
+              onClick={() => moveSearch(1)}
+              size="icon-sm"
+              type="button"
+              variant="ghost"
+            >
+              <IconChevronDown />
+            </Button>
+            <Button
+              aria-label="Close conversation search"
+              onClick={closeSearch}
+              size="icon-sm"
+              type="button"
+              variant="ghost"
+            >
+              <IconX />
+            </Button>
+          </div>
+        ) : null}
         {notice}
         <Composer
           agents={agents}
@@ -223,6 +392,8 @@ export function ConversationView({
           className="w-full mt-auto"
           compact
           disabled={disabled}
+          draftKey={draftKey}
+          insertion={insertion}
           onQueue={
             queueWhileBusy
               ? (draft) => {

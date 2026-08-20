@@ -41,7 +41,10 @@ describe("seedMessage", () => {
 describe("the first-message stash", () => {
   test("hands the message to the channel that was just created", () => {
     stashFirstMessage("channel_a", "hello");
-    expect(takeFirstMessage("channel_a")).toBe("hello");
+    expect(takeFirstMessage("channel_a")).toEqual({
+      text: "hello",
+      attachments: [],
+    });
   });
 
   test("gives it up only once", () => {
@@ -55,10 +58,33 @@ describe("the first-message stash", () => {
     expect(takeFirstMessage("channel_never_stashed")).toBeNull();
   });
 
+  test("keeps attachments with the first message", () => {
+    const attachment = {
+      id: "attachment-1",
+      name: "receipt.png",
+      mimeType: "image/png",
+      bytes: 3,
+      data: "aaa",
+      kind: "image" as const,
+    };
+    stashFirstMessage("channel_with_file", "check this", [attachment]);
+
+    expect(takeFirstMessage("channel_with_file")).toEqual({
+      text: "check this",
+      attachments: [attachment],
+    });
+  });
+
   test("keeps two channels' messages apart", () => {
     stashFirstMessage("channel_c", "for c");
     stashFirstMessage("channel_d", "for d");
-    expect(takeFirstMessage("channel_d")).toBe("for d");
-    expect(takeFirstMessage("channel_c")).toBe("for c");
+    expect(takeFirstMessage("channel_d")).toEqual({
+      text: "for d",
+      attachments: [],
+    });
+    expect(takeFirstMessage("channel_c")).toEqual({
+      text: "for c",
+      attachments: [],
+    });
   });
 });

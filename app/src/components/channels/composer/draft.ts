@@ -6,6 +6,7 @@ import {
   segmentsToPlainText,
   text,
 } from "prompt-area/helpers";
+import type { ComposerAttachment } from "./attachments";
 
 /**
  * Pure boundary between prompt-area segments and OpenBot's message draft model.
@@ -26,10 +27,20 @@ export type ComposerDraft = {
   agentId: string | null;
   /** Commands that survive into the sent message, in the order they were typed. */
   commandIds: string[];
+  /**
+   * Files picked, dropped, or pasted into the composer, already encoded for the wire.
+   *
+   * Optional so that callers holding a text-only draft — the queue's tests, the compose screen —
+   * do not have to say "no files" out loud. Absent and empty mean the same thing.
+   */
+  attachments?: readonly ComposerAttachment[];
   isEmpty: boolean;
 };
 
-export function toDraft(segments: Segment[]): ComposerDraft {
+export function toDraft(
+  segments: Segment[],
+  attachments: readonly ComposerAttachment[] = [],
+): ComposerDraft {
   const agentChips = getChipsByTrigger(segments, AGENT_TRIGGER);
   const commandChips = getChipsByTrigger(segments, COMMAND_TRIGGER);
 
@@ -37,7 +48,9 @@ export function toDraft(segments: Segment[]): ComposerDraft {
     text: segmentsToPlainText(segments).trim(),
     agentId: agentChips.at(-1)?.value ?? null,
     commandIds: commandChips.map((chip) => chip.value),
-    isEmpty: isSegmentsEmpty(segments),
+    ...(attachments.length > 0 ? { attachments: [...attachments] } : {}),
+    // A message that is only a file is still a message.
+    isEmpty: isSegmentsEmpty(segments) && attachments.length === 0,
   };
 }
 
