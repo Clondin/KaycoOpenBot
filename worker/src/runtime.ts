@@ -180,7 +180,6 @@ export function startConnectorWorker(options: {
     await active;
   };
   const timer = setInterval(() => void tick(), intervalMs);
-  timer.unref?.();
   void tick();
   return async () => {
     stopped = true;
