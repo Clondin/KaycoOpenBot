@@ -8,8 +8,8 @@ import { z } from "zod";
 import type { DeploymentConfig } from "../config";
 import {
   type GrantedTool,
-  toolRunContext,
   type ToolRunContext,
+  toolRunContext,
 } from "../plugins/tools";
 import type { CodexPreferences } from "./preferences";
 import {
