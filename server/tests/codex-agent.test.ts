@@ -257,6 +257,44 @@ describe("Codex AG-UI adapter", () => {
       dynamicTools: [{ name: "show_card" }, { name: "mcp__notes__search" }],
     });
   });
+
+  test("starts a new AG-UI text message when Codex changes message items", async () => {
+    const client = new FakeCodexClient("message-switch");
+    const agent = new CodexAgent({
+      userId: "user-7",
+      agentId: "assistant",
+      name: "Assistant",
+      systemPrompt: "Be useful.",
+      manager: manager(client),
+      threadStore: {
+        get: async () => null,
+        set: async () => undefined,
+      },
+      config: {
+        executable: "codex",
+        homeRoot: "/private/codex",
+        idleMs: 10_000,
+      },
+    });
+    agent.setMessages([{ id: "user-1", role: "user", content: "Hello" }]);
+    const events: BaseEvent[] = [];
+
+    await agent.runAgent(
+      { runId: "run-message-switch" },
+      { onEvent: ({ event }) => events.push(event) },
+    );
+
+    expect(events.map((event) => event.type)).toEqual([
+      "RUN_STARTED",
+      "TEXT_MESSAGE_START",
+      "TEXT_MESSAGE_CONTENT",
+      "TEXT_MESSAGE_END",
+      "TEXT_MESSAGE_START",
+      "TEXT_MESSAGE_CONTENT",
+      "TEXT_MESSAGE_END",
+      "RUN_FINISHED",
+    ]);
+  });
 });
 
 function manager(client: CodexAgentClient): CodexClientLeaseManager {
@@ -288,7 +326,11 @@ class FakeCodexClient implements CodexAgentClient {
   toolResponse: unknown;
 
   constructor(
-    private readonly callTool: false | "surface" | "server" = false,
+    private readonly callTool:
+      | false
+      | "surface"
+      | "server"
+      | "message-switch" = false,
   ) {}
 
   async request<T>(method: string, params?: unknown): Promise<T> {
@@ -298,6 +340,25 @@ class FakeCodexClient implements CodexAgentClient {
     }
     if (method === "turn/start") {
       queueMicrotask(async () => {
+        if (this.callTool === "message-switch") {
+          this.emit("item/agentMessage/delta", {
+            threadId: "codex-thread",
+            turnId: "turn-1",
+            itemId: "message-1",
+            delta: "First response.",
+          });
+          this.emit("item/agentMessage/delta", {
+            threadId: "codex-thread",
+            turnId: "turn-1",
+            itemId: "message-2",
+            delta: "Second response.",
+          });
+          this.emit("turn/completed", {
+            threadId: "codex-thread",
+            turn: { id: "turn-1", status: "completed" },
+          });
+          return;
+        }
         if (this.callTool) {
           this.toolResponse = await this.requestHandlers.get(
             "item/tool/call",
