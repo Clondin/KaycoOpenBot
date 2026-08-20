@@ -6,6 +6,11 @@ import type { Message, ToolCall } from "@ag-ui/core";
 
 export type VisibleChatItem =
   | {
+      kind: "reasoning";
+      id: string;
+      text: string;
+    }
+  | {
       kind: "text";
       id: string;
       role: "user" | "assistant";
@@ -69,6 +74,12 @@ export function toVisibleChatItems(
   }
 
   return messages.flatMap((message): VisibleChatItem[] => {
+    if (message.role === "reasoning") {
+      return typeof message.content === "string" && message.content
+        ? [{ kind: "reasoning", id: message.id, text: message.content }]
+        : [];
+    }
+
     if (message.role === "assistant") {
       const items: VisibleChatItem[] = [];
       if (message.content) {
@@ -170,6 +181,7 @@ export function shouldShowThinking(
 
   const lastItem = items.at(-1);
   if (!lastItem) return true;
+  if (lastItem.kind === "reasoning") return false;
   if (lastItem.kind === "tool") return "result" in lastItem;
   return lastItem.role === "user";
 }

@@ -52,6 +52,14 @@ describe("visible chat messages", () => {
   test("shows thinking only when a busy turn has no visible progress", () => {
     const userOnly = toVisibleChatItems([messages[0]]);
     const assistantText = toVisibleChatItems(messages);
+    const reasoning = toVisibleChatItems([
+      messages[0],
+      {
+        id: "reasoning-1",
+        role: "reasoning",
+        content: "Checking the constraints.",
+      },
+    ]);
     const pendingTool = toVisibleChatItems([
       messages[0],
       {
@@ -94,7 +102,26 @@ describe("visible chat messages", () => {
     expect(shouldShowThinking(true, pendingTool)).toBe(false);
     expect(shouldShowThinking(true, settledTool)).toBe(true);
     expect(shouldShowThinking(true, assistantText)).toBe(false);
+    expect(shouldShowThinking(true, reasoning)).toBe(false);
     expect(shouldShowThinking(false, userOnly)).toBe(false);
+  });
+
+  test("keeps streamed reasoning in the visible transcript", () => {
+    expect(
+      toVisibleChatItems([
+        {
+          id: "reasoning-1",
+          role: "reasoning",
+          content: "Checking the request.\n\nChoosing the safest path.",
+        },
+      ]),
+    ).toEqual([
+      {
+        kind: "reasoning",
+        id: "reasoning-1",
+        text: "Checking the request.\n\nChoosing the safest path.",
+      },
+    ]);
   });
 
   test("finds matching user and assistant messages without case sensitivity", () => {
