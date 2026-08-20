@@ -1,5 +1,7 @@
 import { useFrontendTool } from "@copilotkit/react-core/v2";
 import { useQueryClient } from "@tanstack/react-query";
+import { Link } from "@tanstack/react-router";
+import { IconArrowRight, IconFileText } from "@tabler/icons-react";
 import { z } from "zod";
 import { ToolLine } from "@/components/channels/tool-line";
 import { useActiveBotHolder } from "./active-bot";
@@ -207,13 +209,43 @@ export function WorkTools() {
       void refresh();
       return `Saved project artifact ${response.artifact.id}, version ${response.artifact.version}.`;
     },
-    render: ({ args, status }) => (
-      <ToolLine
-        detail={typeof args?.title === "string" ? args.title : undefined}
-        label="Saved project artifact"
-        running={status !== "complete"}
-      />
-    ),
+    render: ({ args, status }) => {
+      const title =
+        typeof args?.title === "string" ? args.title : "Project artifact";
+      const content = typeof args?.content === "string" ? args.content : "";
+      if (status !== "complete") {
+        return (
+          <ToolLine detail={title} label="Saving project artifact" running />
+        );
+      }
+      return (
+        <article className="overflow-hidden rounded-xl border bg-card shadow-xs">
+          <div className="flex items-start gap-3 p-3">
+            <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+              <IconFileText className="size-5" />
+            </span>
+            <div className="min-w-0 flex-1">
+              <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                Saved to project artifacts
+              </p>
+              <h3 className="mt-0.5 truncate font-medium text-sm">{title}</h3>
+              {content ? (
+                <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-muted-foreground">
+                  {content}
+                </p>
+              ) : null}
+            </div>
+          </div>
+          <Link
+            className="flex items-center justify-between border-t px-3 py-2 text-xs font-medium text-primary hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+            to="/work"
+          >
+            Open project workspace
+            <IconArrowRight className="size-3.5" />
+          </Link>
+        </article>
+      );
+    },
   });
 
   return null;

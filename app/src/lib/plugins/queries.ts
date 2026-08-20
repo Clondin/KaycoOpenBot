@@ -25,6 +25,7 @@ export type PluginServer = {
   /** `first-party` for a reviewed entry, `custom` for one an administrator added by URL. */
   provenance: string;
   hasCredential: boolean;
+  authMode: "token" | "oauth";
   toolsRefreshedAt: string | null;
   lastError: string | null;
   addedBy: string | null;

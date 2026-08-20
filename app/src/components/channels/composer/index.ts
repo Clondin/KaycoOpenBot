@@ -1,4 +1,8 @@
-export { Composer, type ComposerProps } from "./composer";
+export {
+  Composer,
+  type ComposerInsertion,
+  type ComposerProps,
+} from "./composer";
 export {
   attachmentInputPart,
   type ComposerAttachment,

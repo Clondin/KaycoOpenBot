@@ -38,6 +38,8 @@ export function createPluginRoutes(
    * cannot end up calling somebody else's tools by leaving an argument off.
    */
   canUseBot: BotAccessCheck,
+  oauthCallbackUrl = "http://localhost:3001/api/plugins/oauth/callback",
+  appOrigin = "http://localhost:3010",
 ) {
   const routes = new Hono<{ Variables: AppVariables }>();
 
@@ -96,6 +98,7 @@ export function createPluginRoutes(
       key?: string;
       instanceHost?: string;
       credentialId?: string;
+      authMode?: "token" | "oauth";
     } | null;
     if (!body?.key) {
       return context.json({ error: "A catalogue key is required." }, 400);
@@ -106,6 +109,7 @@ export function createPluginRoutes(
         key: body.key,
         instanceHost: body.instanceHost,
         credentialId: body.credentialId,
+        authMode: body.authMode,
         by: actorEmail(context),
       });
       return context.json({ server });
@@ -133,6 +137,7 @@ export function createPluginRoutes(
       title?: string;
       url?: string;
       credentialId?: string;
+      authMode?: "token" | "oauth";
     } | null;
     if (!body?.id || !body.title || !body.url) {
       return context.json(
@@ -147,6 +152,7 @@ export function createPluginRoutes(
         title: body.title,
         url: body.url,
         credentialId: body.credentialId,
+        authMode: body.authMode,
         by: actorEmail(context),
       });
       return context.json({ server });
@@ -186,6 +192,45 @@ export function createPluginRoutes(
         return context.json({ error: error.message }, 404);
       }
       throw error;
+    }
+  });
+
+  routes.post("/servers/:id/oauth/start", requireUser, async (context) => {
+    const forbidden = requireAdmin(context);
+    if (forbidden) return forbidden;
+    const result = await store.beginOAuth(
+      context.req.param("id"),
+      oauthCallbackUrl,
+      actorEmail(context),
+    );
+    return context.json(result);
+  });
+
+  routes.get("/oauth/callback", requireUser, async (context) => {
+    const forbidden = requireAdmin(context);
+    if (forbidden) return forbidden;
+    const code = context.req.query("code");
+    const state = context.req.query("state");
+    const serverId = state?.split(".", 1)[0];
+    if (!code || !state || !serverId || !/^[a-z0-9-]{2,40}$/.test(serverId)) {
+      return context.json({ error: "The MCP OAuth callback is invalid." }, 400);
+    }
+    try {
+      await store.completeOAuth(serverId, code, state, actorEmail(context));
+      return context.redirect(
+        new URL("/admin/plugins?mcpOAuth=connected", appOrigin).toString(),
+      );
+    } catch (error) {
+      console.error(
+        JSON.stringify({
+          type: "mcp-oauth-callback-failed",
+          server: serverId,
+          message: error instanceof Error ? error.message : String(error),
+        }),
+      );
+      return context.redirect(
+        new URL("/admin/plugins?mcpOAuth=failed", appOrigin).toString(),
+      );
     }
   });
 

@@ -1,4 +1,14 @@
-import { and, desc, eq, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  isNotNull,
+  isNull,
+  lte,
+  or,
+  sql,
+} from "drizzle-orm";
 import type { AgentActor } from "../agents/profile-types";
 import type { AuditStore } from "../audit";
 import { recordAuditEvent } from "../audit";
@@ -6,7 +16,10 @@ import type { Database } from "../db/client";
 import {
   channelAgents,
   channelMemberships,
+  delegations,
   intelligenceChannelMappings,
+  routineDispatches,
+  routines,
   taskRunEvents,
   taskRuns,
 } from "../db/schema";
@@ -32,6 +45,13 @@ export type TaskRun = {
   title: string;
   status: TaskRunStatus;
   parentRunId: string | null;
+  attempt: number;
+  maxAttempts: number;
+  maxRuntimeMs: number;
+  leaseOwner: string | null;
+  leaseExpiresAt: Date | null;
+  nextAttemptAt: Date | null;
+  output: string | null;
   error: string | null;
   startedAt: Date | null;
   completedAt: Date | null;
@@ -49,6 +69,20 @@ export type TaskRunEvent = {
   createdAt: Date;
 };
 
+export type AutomatedTaskSource =
+  | { kind: "routine"; id: string; instruction: string }
+  | { kind: "delegation"; id: string; instruction: string };
+
+export type AutomatedTask = {
+  run: TaskRun;
+  source: AutomatedTaskSource;
+};
+
+export type AutomatedSettlement = {
+  run: TaskRun;
+  retryScheduled: boolean;
+};
+
 export type RunStore = {
   create(
     actor: AgentActor,
@@ -57,6 +91,8 @@ export type RunStore = {
       agentId: string;
       title?: string;
       parentRunId?: string;
+      maxAttempts?: number;
+      maxRuntimeMs?: number;
     },
   ): Promise<TaskRun>;
   get(actor: AgentActor, runId: string): Promise<TaskRun | null>;
@@ -80,12 +116,40 @@ export type RunStore = {
     status: TaskRunStatus,
     error?: string,
   ): Promise<TaskRun | null>;
+  /** Atomically claims the oldest routine/delegation run that is ready. */
+  claimAutomated(
+    workerId: string,
+    now: Date,
+    leaseMs: number,
+  ): Promise<AutomatedTask | null>;
+  /** Extends a lease only while this worker still owns a running attempt. */
+  heartbeatAutomated(
+    runId: string,
+    workerId: string,
+    now: Date,
+    leaseMs: number,
+  ): Promise<boolean>;
+  /** Completes an owned attempt or returns it to the queue with bounded backoff. */
+  settleAutomated(
+    runId: string,
+    workerId: string,
+    outcome: { ok: true; output?: string } | { ok: false; error: string },
+    now: Date,
+    baseRetryMs: number,
+  ): Promise<AutomatedSettlement | null>;
+  /** Reclaims attempts whose worker disappeared, using the same retry ceiling. */
+  recoverExpiredAutomated(
+    now: Date,
+    baseRetryMs: number,
+    maximum?: number,
+  ): Promise<Array<{ task: AutomatedTask; retryScheduled: boolean }>>;
 };
 
 const TERMINAL = new Set<TaskRunStatus>(["succeeded", "failed", "cancelled"]);
 const TRANSITIONS: Record<TaskRunStatus, ReadonlySet<TaskRunStatus>> = {
   queued: new Set(["running", "failed", "cancelled"]),
   running: new Set([
+    "queued",
     "waiting_for_approval",
     "waiting_for_input",
     "succeeded",
@@ -101,6 +165,7 @@ const TRANSITIONS: Record<TaskRunStatus, ReadonlySet<TaskRunStatus>> = {
 
 const MAX_TITLE_CODE_POINTS = 120;
 const MAX_ERROR_CODE_POINTS = 500;
+const MAX_OUTPUT_CODE_POINTS = 50_000;
 
 export class RunNotFoundError extends Error {
   constructor() {
@@ -127,8 +192,67 @@ function safeText(value: string | undefined, fallback: string, limit: number) {
   return Array.from(collapsed).slice(0, limit).join("");
 }
 
+function safeOutput(value: string | undefined) {
+  const output = Array.from(value?.trim() ?? "")
+    .slice(0, MAX_OUTPUT_CODE_POINTS)
+    .join("");
+  return output || null;
+}
+
 function rowToRun(row: typeof taskRuns.$inferSelect): TaskRun {
   return { ...row, status: row.status as TaskRunStatus };
+}
+
+type AutomatedRow = {
+  run: typeof taskRuns.$inferSelect;
+  routineId: string | null;
+  routineInstruction: string | null;
+  delegationId: string | null;
+  delegationInstructions: string | null;
+  delegationExpectedOutput: string | null;
+  delegationContext: Record<string, unknown> | null;
+};
+
+function automatedTask(row: AutomatedRow): AutomatedTask {
+  if (row.delegationId && row.delegationInstructions) {
+    const context = row.delegationContext ?? {};
+    const contextText = Object.keys(context).length
+      ? `Context:\n${JSON.stringify(context)}`
+      : "";
+    return {
+      run: rowToRun(row.run),
+      source: {
+        kind: "delegation",
+        id: row.delegationId,
+        instruction: [
+          row.delegationInstructions,
+          row.delegationExpectedOutput
+            ? `Expected output:\n${row.delegationExpectedOutput}`
+            : "",
+          contextText,
+        ]
+          .filter(Boolean)
+          .join("\n\n")
+          .slice(0, 30_000),
+      },
+    };
+  }
+  if (row.routineId && row.routineInstruction) {
+    return {
+      run: rowToRun(row.run),
+      source: {
+        kind: "routine",
+        id: row.routineId,
+        instruction: row.routineInstruction,
+      },
+    };
+  }
+  throw new Error("An automated task has no durable source instruction.");
+}
+
+function retryDelay(attempt: number, baseRetryMs: number) {
+  const exponent = Math.max(0, Math.min(attempt - 1, 8));
+  return Math.max(1_000, baseRetryMs) * 2 ** exponent;
 }
 
 export function createRunStore(
@@ -153,6 +277,81 @@ export function createRunStore(
       type,
       payload,
     });
+  };
+
+  const selectAutomated = (executor: Database) =>
+    executor
+      .select({
+        run: taskRuns,
+        routineId: routineDispatches.routineId,
+        routineInstruction: routines.instruction,
+        delegationId: delegations.id,
+        delegationInstructions: delegations.instructions,
+        delegationExpectedOutput: delegations.expectedOutput,
+        delegationContext: delegations.context,
+      })
+      .from(taskRuns)
+      .leftJoin(routineDispatches, eq(routineDispatches.taskRunId, taskRuns.id))
+      .leftJoin(routines, eq(routines.id, routineDispatches.routineId))
+      .leftJoin(delegations, eq(delegations.taskRunId, taskRuns.id));
+
+  const settleOn = async (
+    executor: Database,
+    current: typeof taskRuns.$inferSelect,
+    outcome: { ok: true; output?: string } | { ok: false; error: string },
+    now: Date,
+    baseRetryMs: number,
+  ): Promise<AutomatedSettlement> => {
+    const retryScheduled = !outcome.ok && current.attempt < current.maxAttempts;
+    const status: TaskRunStatus = outcome.ok
+      ? "succeeded"
+      : retryScheduled
+        ? "queued"
+        : "failed";
+    const error = outcome.ok
+      ? null
+      : safeText(
+          outcome.error,
+          "The automated task stopped without a reported reason.",
+          MAX_ERROR_CODE_POINTS,
+        );
+    const [updated] = await executor
+      .update(taskRuns)
+      .set({
+        status,
+        error,
+        output: outcome.ok ? safeOutput(outcome.output) : null,
+        leaseOwner: null,
+        leaseExpiresAt: null,
+        nextAttemptAt: retryScheduled
+          ? new Date(now.getTime() + retryDelay(current.attempt, baseRetryMs))
+          : null,
+        completedAt: TERMINAL.has(status) ? now : null,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(taskRuns.id, current.id),
+          eq(taskRuns.status, "running"),
+          current.leaseOwner
+            ? eq(taskRuns.leaseOwner, current.leaseOwner)
+            : isNull(taskRuns.leaseOwner),
+        ),
+      )
+      .returning();
+    if (!updated) {
+      throw new RunTransitionError("running", status);
+    }
+    await appendEvent(executor, current.id, "status", {
+      from: "running",
+      to: status,
+      attempt: current.attempt,
+      ...(error ? { error } : {}),
+      ...(retryScheduled && updated.nextAttemptAt
+        ? { retryAt: updated.nextAttemptAt.toISOString() }
+        : {}),
+    });
+    return { run: rowToRun(updated), retryScheduled };
   };
 
   const transitionOn = async (
@@ -193,6 +392,14 @@ export function createRunStore(
               ? now
               : current.startedAt,
           completedAt: TERMINAL.has(status) ? now : null,
+          leaseOwner:
+            TERMINAL.has(status) || status === "queued"
+              ? null
+              : current.leaseOwner,
+          leaseExpiresAt:
+            TERMINAL.has(status) || status === "queued"
+              ? null
+              : current.leaseExpiresAt,
           error:
             status === "failed"
               ? safeText(
@@ -278,6 +485,22 @@ export function createRunStore(
               MAX_TITLE_CODE_POINTS,
             ),
             ...(input.parentRunId ? { parentRunId: input.parentRunId } : {}),
+            ...(input.maxAttempts !== undefined
+              ? {
+                  maxAttempts: Math.max(
+                    1,
+                    Math.min(Math.trunc(input.maxAttempts), 10),
+                  ),
+                }
+              : {}),
+            ...(input.maxRuntimeMs !== undefined
+              ? {
+                  maxRuntimeMs: Math.max(
+                    10_000,
+                    Math.min(Math.trunc(input.maxRuntimeMs), 3_600_000),
+                  ),
+                }
+              : {}),
           })
           .returning();
         if (!created) throw new Error("The task run could not be created.");
@@ -384,6 +607,161 @@ export function createRunStore(
     },
 
     transitionSystem: transitionOn,
+
+    async claimAutomated(workerId, now, leaseMs) {
+      return database.transaction(async (transaction) => {
+        const [candidate] = await selectAutomated(
+          transaction as unknown as Database,
+        )
+          .where(
+            and(
+              eq(taskRuns.status, "queued"),
+              or(
+                isNull(taskRuns.nextAttemptAt),
+                lte(taskRuns.nextAttemptAt, now),
+              ),
+              or(
+                isNotNull(routineDispatches.routineId),
+                isNotNull(delegations.id),
+              ),
+            ),
+          )
+          .orderBy(asc(taskRuns.createdAt))
+          .limit(1)
+          .for("update", { of: taskRuns, skipLocked: true });
+        if (!candidate) return null;
+
+        const leaseExpiresAt = new Date(
+          now.getTime() + Math.max(5_000, leaseMs),
+        );
+        const [claimed] = await transaction
+          .update(taskRuns)
+          .set({
+            status: "running",
+            attempt: candidate.run.attempt + 1,
+            leaseOwner: workerId,
+            leaseExpiresAt,
+            nextAttemptAt: null,
+            error: null,
+            output: null,
+            startedAt: candidate.run.startedAt ?? now,
+            lastHeartbeatAt: now,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(taskRuns.id, candidate.run.id),
+              eq(taskRuns.status, "queued"),
+            ),
+          )
+          .returning();
+        if (!claimed) return null;
+        await appendEvent(
+          transaction as unknown as Database,
+          claimed.id,
+          "claimed",
+          {
+            worker: workerId,
+            attempt: claimed.attempt,
+            leaseExpiresAt: leaseExpiresAt.toISOString(),
+          },
+        );
+        await appendEvent(
+          transaction as unknown as Database,
+          claimed.id,
+          "status",
+          { from: "queued", to: "running", attempt: claimed.attempt },
+        );
+        return automatedTask({ ...candidate, run: claimed });
+      });
+    },
+
+    async heartbeatAutomated(runId, workerId, now, leaseMs) {
+      const [updated] = await database
+        .update(taskRuns)
+        .set({
+          lastHeartbeatAt: now,
+          leaseExpiresAt: new Date(now.getTime() + Math.max(5_000, leaseMs)),
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(taskRuns.id, runId),
+            eq(taskRuns.status, "running"),
+            eq(taskRuns.leaseOwner, workerId),
+          ),
+        )
+        .returning({ id: taskRuns.id });
+      return Boolean(updated);
+    },
+
+    async settleAutomated(runId, workerId, outcome, now, baseRetryMs) {
+      return database.transaction(async (transaction) => {
+        const [current] = await transaction
+          .select()
+          .from(taskRuns)
+          .where(
+            and(
+              eq(taskRuns.id, runId),
+              eq(taskRuns.status, "running"),
+              eq(taskRuns.leaseOwner, workerId),
+            ),
+          )
+          .for("update");
+        if (!current) return null;
+        return settleOn(
+          transaction as unknown as Database,
+          current,
+          outcome,
+          now,
+          baseRetryMs,
+        );
+      });
+    },
+
+    async recoverExpiredAutomated(now, baseRetryMs, maximum = 20) {
+      return database.transaction(async (transaction) => {
+        const expired = await selectAutomated(
+          transaction as unknown as Database,
+        )
+          .where(
+            and(
+              eq(taskRuns.status, "running"),
+              isNotNull(taskRuns.leaseOwner),
+              lte(taskRuns.leaseExpiresAt, now),
+              or(
+                isNotNull(routineDispatches.routineId),
+                isNotNull(delegations.id),
+              ),
+            ),
+          )
+          .orderBy(asc(taskRuns.leaseExpiresAt))
+          .limit(Math.max(1, Math.min(maximum, 100)))
+          .for("update", { of: taskRuns, skipLocked: true });
+        const recovered: Array<{
+          task: AutomatedTask;
+          retryScheduled: boolean;
+        }> = [];
+        for (const row of expired) {
+          const settlement = await settleOn(
+            transaction as unknown as Database,
+            row.run,
+            {
+              ok: false,
+              error:
+                "The previous executor stopped responding before its lease expired.",
+            },
+            now,
+            baseRetryMs,
+          );
+          recovered.push({
+            task: automatedTask({ ...row, run: settlement.run }),
+            retryScheduled: settlement.retryScheduled,
+          });
+        }
+        return recovered;
+      });
+    },
   };
 
   return store;

@@ -6,7 +6,13 @@ import { authoriseAgentCall } from "./agents/callback-token";
 import type { AgentProfileStore } from "./agents/profile-store";
 import { createAgentRoutes } from "./agents/routes";
 import type { ApprovalService } from "./approvals/store";
-import { type AuditReader, type AuditStore, auditQueryFromUrl } from "./audit";
+import {
+  type AuditReader,
+  type AuditStore,
+  auditQueryFromUrl,
+  createAuditEvidenceBundle,
+  recordAuditEvent,
+} from "./audit";
 import { createDevRequireUser } from "./auth/dev-actor";
 import {
   type AppVariables,
@@ -38,12 +44,23 @@ import { PluginRefusedError, type PluginStore } from "./plugins/store";
 import { callToolWithApproval, REFUSAL_MARKER } from "./plugins/tools";
 import { createRunRoutes } from "./runs/routes";
 import type { RunStore } from "./runs/store";
+import type { HealthReader } from "./health";
 import type { PackageStatusReader } from "./tenant-package";
 import {
   createRoutineWebhookRoutes,
   createWorkRoutes,
   type WorkServices,
 } from "./work/routes";
+
+export type AgentToolCall = (input: {
+  name: string;
+  args: Record<string, unknown>;
+  botId: string;
+  actorId: string;
+  taskRunId?: string;
+  channelId?: string;
+  signal: AbortSignal;
+}) => Promise<{ text: string; isError: boolean } | null>;
 
 export function createApp(
   config: DeploymentConfig,
@@ -127,6 +144,9 @@ export function createApp(
   codexManager?: CodexProcessManager,
   /** Saved per-user model and reasoning choices for the Codex adapter. */
   codexPreferences?: CodexPreferenceStore,
+  /** First-party deployment tools that remote AG-UI coworkers call through the signed gateway. */
+  agentToolCall?: AgentToolCall,
+  healthReader?: HealthReader,
 ) {
   const app = new Hono<{ Variables: AppVariables }>();
 
@@ -151,6 +171,18 @@ export function createApp(
   );
 
   app.get("/health", (context) => context.json({ status: "ok" }));
+  app.get("/health/ready", async (context) => {
+    if (!healthReader) return context.json({ status: "ready" });
+    try {
+      const report = await healthReader();
+      return context.json({
+        status: report.status,
+        checkedAt: report.checkedAt,
+      });
+    } catch {
+      return context.json({ status: "unavailable" }, 503);
+    }
+  });
   // Projected, never the raw runtime. config.runtime carries the Intelligence contract, including
   // INTELLIGENCE_API_KEY and the licence token, and this endpoint is reachable by anyone. Returning
   // the object wholesale would serve deployment secrets to the browser. Add fields here explicitly.
@@ -273,6 +305,28 @@ export function createApp(
     const denied = requireAdmin(context);
     return denied ?? context.json({ status: "ok" });
   });
+  app.get("/api/admin/health", requireUser, async (context) => {
+    const denied = requireAdmin(context);
+    if (denied) return denied;
+    if (!healthReader) {
+      return context.json(
+        { error: "Health reporting is not configured." },
+        503,
+      );
+    }
+    try {
+      return context.json(await healthReader());
+    } catch (error) {
+      return context.json(
+        {
+          status: "unavailable",
+          error:
+            error instanceof Error ? error.message : "Health check failed.",
+        },
+        503,
+      );
+    }
+  });
   app.get("/api/admin/model-status", requireUser, async (context) => {
     const denied = requireAdmin(context);
     if (denied) return denied;
@@ -293,6 +347,39 @@ export function createApp(
     return context.json(
       await auditReader.list(auditQueryFromUrl(new URL(context.req.url))),
     );
+  });
+  app.get("/api/admin/audit-evidence", requireUser, async (context) => {
+    const denied = requireAdmin(context);
+    if (denied) return denied;
+    if (!auditReader) {
+      return context.json({ error: "Audit logging is not configured." }, 503);
+    }
+    const bundle = await createAuditEvidenceBundle(
+      auditReader,
+      auditQueryFromUrl(new URL(context.req.url)),
+    );
+    if (auditStore) {
+      await recordAuditEvent(auditStore, {
+        actorUserId: context.var.actor.id,
+        eventType: "audit.evidence_exported",
+        targetType: "audit_evidence",
+        targetId: bundle.integrity.chainRoot,
+        payload: {
+          events: bundle.eventCount,
+          truncated: bundle.truncated,
+          filters: bundle.query,
+        },
+      });
+    }
+    return new Response(`${JSON.stringify(bundle, null, 2)}\n`, {
+      headers: {
+        "content-type": "application/json; charset=utf-8",
+        "content-disposition": `attachment; filename="openbot-audit-${new Date()
+          .toISOString()
+          .slice(0, 10)}.json"`,
+        "cache-control": "no-store",
+      },
+    });
   });
   app.get("/api/admin/credentials", requireUser, async (context) => {
     const denied = requireAdmin(context);
@@ -425,6 +512,26 @@ export function createApp(
       );
     },
   );
+  app.post("/api/admin/connectors/:type/sync", requireUser, async (context) => {
+    const denied = requireAdmin(context);
+    if (denied) return denied;
+    if (!connectorService?.requestSync) {
+      return context.json(
+        { error: "Connector synchronization is not configured." },
+        503,
+      );
+    }
+    const type = context.req.param("type");
+    if (type !== "google_drive" && type !== "onedrive") {
+      return context.json({ error: "There is no such connector." }, 404);
+    }
+    return context.json(
+      {
+        queued: await connectorService.requestSync(type, context.var.actor.id),
+      },
+      202,
+    );
+  });
 
   // The CopilotKit runtime, behind the same session guard as every other API route. Mounted last so
   // its own routing under /api/copilotkit cannot shadow an OpenBot route declared above.
@@ -491,11 +598,20 @@ export function createApp(
   if (pluginStore) {
     app.route(
       "/api/plugins",
-      createPluginRoutes(pluginStore, requireUser, canUseBot),
+      createPluginRoutes(
+        pluginStore,
+        requireUser,
+        canUseBot,
+        new URL(
+          "/api/plugins/oauth/callback",
+          config.auth?.baseUrl ?? "http://localhost:3001",
+        ).toString(),
+        config.trustedOrigins[0] ?? "http://localhost:3010",
+      ),
     );
   }
 
-  if (pluginStore) {
+  if (pluginStore || agentToolCall) {
     const legacyToken = config.agentToolToken ?? "";
     app.post("/api/agent-tools/call", async (context) => {
       const body = (await context.req.json().catch(() => null)) as {
@@ -520,6 +636,22 @@ export function createApp(
       }
 
       try {
+        const firstParty = await agentToolCall?.({
+          name: body.name,
+          args: body.args ?? {},
+          botId: verdict.botId,
+          actorId: verdict.actorId,
+          ...(verdict.taskRunId ? { taskRunId: verdict.taskRunId } : {}),
+          ...(verdict.channelId ? { channelId: verdict.channelId } : {}),
+          signal: context.req.raw.signal,
+        });
+        if (firstParty) return context.json(firstParty);
+        if (!pluginStore) {
+          return context.json({
+            text: "That deployment tool is not available.",
+            isError: true,
+          });
+        }
         const result = await callToolWithApproval({
           store: pluginStore,
           approvals: approvalService,

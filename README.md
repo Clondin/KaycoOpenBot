@@ -50,7 +50,7 @@ A Bot is any endpoint speaking [AG-UI](https://github.com/ag-ui-protocol/ag-ui),
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/architecture-dark.svg">
-  <img src="assets/architecture-light.svg" alt="You talk to the server, which sends the turn to a Bot over AG-UI. Every tool call the Bot makes comes back through the gateway, which resolves the target, decides it against your policy, records an audit row, and only then acts, or refuses and names the rule. Allowed browser and file actions reach that Bot's own computer, one container each with its own Chromium, logins and workspace, built by the supervisor. Decisions land in PostgreSQL and threads in CopilotKit Intelligence.">
+  <img src="assets/architecture-light.svg" alt="You talk to a Bot through the server. Tool calls return through the policy and audit gateway before reaching an isolated computer. Durable tasks and permission-aware knowledge live in PostgreSQL, a leased worker synchronizes connectors, and conversation threads live in CopilotKit Intelligence.">
 </picture>
 
 ## Requirements
@@ -99,7 +99,7 @@ A Bot is any endpoint speaking [AG-UI](https://github.com/ag-ui-protocol/ag-ui),
 
 5. Open <http://localhost:3010>.
 
-`scripts/start.sh` starts Docker services, applies migrations, starts the API server on port 3001, starts the app on port 3010, and checks that the services answer their own health routes before printing next steps.
+`scripts/start.sh` starts Docker services (including the connector worker), applies migrations, starts the API server on port 3001, starts the app on port 3010, and checks that the services answer their own health routes before printing next steps.
 
 ## Try it
 
@@ -140,13 +140,15 @@ A Bot is any endpoint speaking [AG-UI](https://github.com/ag-ui-protocol/ag-ui),
 - **Secrets never enter the transcript**: the trail records that a secret was requested and how long it was, not what it said.
 - **Bring your own agent**: any AG-UI endpoint is a Bot, on a framework or hand written. Endpoints are validated with the same target checks used for browser navigation, and an auth header is stored write-only.
 - **Components instead of prose**: compiled React components live in `app/src/components/gallery/`, sandboxed ones are authored in `/admin/playground` and published with no deployment. Every call asks the server whether the component exists, is published, and is not withheld from that Bot. Data functions are granted per component.
-- **Governed MCP**: a curated catalogue ships for Atlassian, Box, Slack, Salesforce and ServiceNow. Custom servers must pass URL checks, and any tool not positively classified as a read is treated as a write.
+- **Governed MCP with OAuth**: a curated catalogue ships for Atlassian, Box, Slack, Salesforce and ServiceNow. Servers can use a write-only bearer token or OAuth discovery, dynamic registration and PKCE; encrypted tokens, grants, policy, approvals and audit stay server-side.
 - **Skills are instructions, not capabilities**: personal skills attach only to Bots their author owns, deployment skills are admin-owned, and both are invoked with `/` in the composer.
-- **Durable work control center**: `/work` combines queued and active runs, reusable manual/scheduled/webhook routines, user-to-Bot and Bot-to-Bot handoffs, shared project artifacts, and actionable notifications.
+- **Durable work control center**: `/work` combines queued and active runs, reusable manual/scheduled/webhook routines, user-to-Bot and Bot-to-Bot handoffs, shared project artifacts, and actionable notifications. A leased executor adds heartbeats, bounded attempts, timeout budgets, retries and crash recovery.
 - **Shared project teams**: assign several coworkers to a project, open one team channel, and explicitly choose which coworker answers each turn. Computers, credentials, and browser sessions remain isolated per Bot.
 - **Portable team templates**: export a team's names and standing roles, then import them as new private coworkers. Templates never carry ids, endpoints, credentials, grants, messages, ownership, or visibility.
 - **Inspectable memory**: stable user, coworker, and project context is stored in PostgreSQL with scope, source, confidence, and pinning. People can inspect, edit, or remove it; relevant user and coworker memory is supplied to the active conversation.
-- **An audit trail you can read**: `/admin/audit` lists what was permitted, what was refused and what failed, and every refusal carries the rule that caused it.
+- **Permission-aware company knowledge**: the connector worker syncs Google Drive into lexical/vector chunks, keeps source ACLs beside them, and filters results in SQL before a Bot sees a citation.
+- **An audit trail you can export**: `/admin/audit` lists what was permitted, refused and failed and downloads a redacted SHA-256-chained evidence bundle.
+- **Operational readiness**: liveness and readiness endpoints surface database, model, task-lease and connector health without leaking details publicly.
 - **Credentials encrypted at rest**: stored through `/admin/credentials`, never returned by an API, and redacted from audit events.
 - **Loopback by default**: computers bind to `127.0.0.1` and require a per-container token, so nothing reaches a logged-in browser by knowing its port.
 - **Durable threads and governed context**: conversations survive restarts through CopilotKit Intelligence, while the inspectable memory and work records owned by this deployment stay in PostgreSQL.
@@ -207,6 +209,7 @@ Full reference: [docs/configuration.md](docs/configuration.md).
 | ------------------------ | -------------------------- | ------------------------------------------------------------------------------------------------ |
 | `app`                    | 3010                       | React/Vite UI.                                                                                   |
 | `server`                 | 3001                       | Hono API, CopilotKit runtime, auth, policy, audit, plugins, components, coworkers, and channels. |
+| `connector-worker`       | internal                   | Google Drive synchronization, embeddings, ACL persistence, leases, and retries.                 |
 | `agent-computer`         | 4100                       | Chromium plus `/workspace` and browser profile.                                                  |
 | `agent-bot`              | 4200                       | Proof-of-concept AG-UI Bot.                                                                          |
 | `agent-langgraph`        | 4201                       | LangGraph AG-UI Bot.                                                                             |

@@ -96,6 +96,9 @@ if ! docker compose run --rm --build migrate >"$LOGS/migrate.log" 2>&1; then
   red "  Log: $LOGS/migrate.log"
   exit 1
 fi
+# The worker has no public port. Start it only after the one-shot migration above has established
+# the queue and vector tables it leases from.
+docker compose up -d --build --no-deps connector-worker >/dev/null
 wait_for "http://localhost:$COMPUTER_PORT/health" "agent-computer"
 wait_for "http://localhost:$BOT_PORT/health" "agent-bot"
 wait_for "http://localhost:$LANGGRAPH_PORT/health" "agent-langgraph"

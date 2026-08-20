@@ -19,6 +19,7 @@ export async function runConnector(
   adapter: ConnectorAdapter,
   persistence: ConnectorPersistence,
   mode: "sync" | "reconcile" = "sync",
+  signal?: AbortSignal,
 ) {
   try {
     const cursor = await persistence.cursor();
@@ -26,6 +27,7 @@ export async function runConnector(
       await adapter.discover({
         cursor,
         mode,
+        ...(signal ? { signal } : {}),
       }),
     );
     if (persistence.persistBatch) {

@@ -1,5 +1,6 @@
 export type KnowledgeActor = {
   userId: string;
+  email?: string;
   groups: string[];
 };
 

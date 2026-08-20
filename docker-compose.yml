@@ -27,6 +27,24 @@ services:
         condition: service_healthy
     restart: "no"
 
+  connector-worker:
+    build:
+      context: .
+      dockerfile: worker/Dockerfile
+    environment:
+      DATABASE_URL: postgres://openbot:openbot@postgres:5432/openbot
+      KEY_ENCRYPTION_KEY: ${KEY_ENCRYPTION_KEY:-}
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
+      EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-https://api.openai.com/v1}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-small}
+      CONNECTOR_POLL_MS: ${CONNECTOR_POLL_MS:-10000}
+      CONNECTOR_SYNC_INTERVAL_MS: ${CONNECTOR_SYNC_INTERVAL_MS:-300000}
+      CONNECTOR_RETRY_MS: ${CONNECTOR_RETRY_MS:-60000}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
   # The Bot's computer is long-lived so browser sessions remain signed in across turns.
   agent-computer:
     build:
@@ -42,6 +60,7 @@ services:
     environment:
       # The secret every caller must present. The container refuses to start without it.
       COMPUTER_TOKEN: ${COMPUTER_TOKEN:-}
+      AGENT_COMPUTER_ALLOW_PRIVATE_HOSTS: ${AGENT_COMPUTER_ALLOW_PRIVATE_HOSTS:-false}
     volumes:
       - agent-workspace:/workspace
       # Chromium's user-data directory is volume-backed so logins survive container restarts.
@@ -123,6 +142,7 @@ services:
       # Handed to every computer this creates, so the server and the computers share one secret.
       COMPUTER_TOKEN: ${COMPUTER_TOKEN:-}
       COMPUTER_IMAGE: ${COMPUTER_IMAGE:-openbot-agent-computer:latest}
+      AGENT_COMPUTER_ALLOW_PRIVATE_HOSTS: ${AGENT_COMPUTER_ALLOW_PRIVATE_HOSTS:-false}
       # Which deployment the computers it creates belong to, so two stacks on one Docker host never
       # derive the same container and volume names for the same Bot.
       COMPUTER_NAMESPACE: ${COMPUTER_NAMESPACE:-openbot}

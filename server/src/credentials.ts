@@ -41,6 +41,7 @@ export type CredentialStore = {
     encryptedValue: string;
   }) => Promise<StoredCredential>;
   revoke: (id: string) => Promise<Date>;
+  replaceEncryptedValue: (id: string, encryptedValue: string) => Promise<void>;
 };
 
 export type CredentialSecretReader = {
@@ -185,6 +186,15 @@ export function createCredentialStore(
         throw new Error("Credential was not found");
       }
       return credential.revokedAt;
+    },
+    replaceEncryptedValue: async (id, encryptedValue) => {
+      const [credential] = await database
+        .update(credentials)
+        .set({ encryptedValue, updatedAt: new Date() })
+        .where(and(eq(credentials.id, id), isNull(credentials.revokedAt)))
+        .returning({ id: credentials.id });
+      if (!credential)
+        throw new Error("Credential was not found or is revoked");
     },
     readSecret: async (id) => {
       const [credential] = await database

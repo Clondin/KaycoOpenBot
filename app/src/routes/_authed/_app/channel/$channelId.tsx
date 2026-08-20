@@ -298,6 +298,15 @@ function RouteComponent() {
         hasError={Boolean(channel.error)}
         searchOpen={isSearching}
         onCloseSearch={() => void showSearch(false)}
+        onSelectAgent={(nextAgentId) =>
+          void navigate({
+            replace: true,
+            search: (previous) => ({
+              ...previous,
+              agent: nextAgentId,
+            }),
+          })
+        }
       />
     </DetailPanel>
   );
@@ -310,6 +319,7 @@ function ChannelBody({
   hasError,
   searchOpen,
   onCloseSearch,
+  onSelectAgent,
 }: {
   agentId: string | undefined;
   channel: AgentChannel | undefined;
@@ -317,6 +327,7 @@ function ChannelBody({
   hasError: boolean;
   searchOpen: boolean;
   onCloseSearch: () => void;
+  onSelectAgent: (agentId: string) => void;
 }) {
   if (isPending) {
     return (
@@ -348,8 +359,9 @@ function ChannelBody({
   return (
     <ChannelChat
       channel={channel}
-      key={channel.id}
+      key={`${channel.id}:${runtimeAgentId}`}
       onCloseSearch={onCloseSearch}
+      onSelectAgent={onSelectAgent}
       runtimeAgentId={runtimeAgentId}
       searchOpen={searchOpen}
     />

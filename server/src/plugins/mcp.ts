@@ -1,5 +1,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
+import { type AddressResolver, createOutboundFetch } from "../network/outbound";
 
 /**
  * The only place in this deployment that speaks MCP to somebody else's server.
@@ -41,10 +43,14 @@ export class McpServerError extends Error {
   }
 }
 
-type Connection = {
+export type Connection = {
   url: string;
   /** The bearer token for this server, already decrypted. Absent for a server that needs none. */
   token?: string;
+  oauthProvider?: OAuthClientProvider;
+  allowPrivateHosts?: boolean;
+  /** Test seam for deterministic DNS validation. */
+  resolver?: AddressResolver;
 };
 
 /**
@@ -58,9 +64,18 @@ async function withClient<T>(
   use: (client: Client) => Promise<T>,
 ): Promise<T> {
   const transport = new StreamableHTTPClientTransport(new URL(connection.url), {
+    ...(connection.oauthProvider
+      ? { authProvider: connection.oauthProvider }
+      : {}),
     requestInit: connection.token
       ? { headers: { Authorization: `Bearer ${connection.token}` } }
       : undefined,
+    fetch: createOutboundFetch({
+      ...(connection.allowPrivateHosts !== undefined
+        ? { allowPrivateHosts: connection.allowPrivateHosts }
+        : {}),
+      ...(connection.resolver ? { resolver: connection.resolver } : {}),
+    }),
   });
   const client = new Client({ name: "openbot", version: "1.0.0" });
 

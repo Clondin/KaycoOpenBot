@@ -58,6 +58,19 @@ export const taskRuns = pgTable(
     title: text("title").notNull(),
     status: taskRunStatus("status").notNull().default("queued"),
     parentRunId: uuid("parent_run_id"),
+    /** Number of server-owned execution attempts already started for this run. */
+    attempt: integer("attempt").notNull().default(0),
+    /** A hard retry ceiling so a poison task cannot run forever. */
+    maxAttempts: integer("max_attempts").notNull().default(3),
+    /** Wall-clock ceiling for one attempt, including tool and approval waits. */
+    maxRuntimeMs: integer("max_runtime_ms").notNull().default(900_000),
+    /** The executor currently entitled to finish this attempt. */
+    leaseOwner: text("lease_owner"),
+    leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
+    /** Backoff gate for a retry. Null means the queued run is immediately eligible. */
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }),
+    /** Server-produced result for unattended work; prompts remain in their source records. */
+    output: text("output"),
     error: text("error"),
     startedAt: timestamp("started_at", { withTimezone: true }),
     completedAt: timestamp("completed_at", { withTimezone: true }),
@@ -68,6 +81,8 @@ export const taskRuns = pgTable(
   (table) => [
     index("task_runs_channel_created_idx").on(table.channelId, table.createdAt),
     index("task_runs_actor_status_idx").on(table.actorUserId, table.status),
+    index("task_runs_queue_idx").on(table.status, table.nextAttemptAt),
+    index("task_runs_lease_idx").on(table.status, table.leaseExpiresAt),
   ],
 );
 

@@ -1,6 +1,7 @@
 import { serve } from "bun";
 import { mintRunAssertion } from "./agents/callback-token";
 import { createAgentFetch } from "./agents/endpoint";
+import type { AgentActor } from "./agents/profile-types";
 import { createAgentProfileStore } from "./agents/profile-store";
 import { createRuntimeAgentLoader } from "./agents/runtime-agents";
 import { createApp } from "./app";
@@ -39,6 +40,7 @@ import {
   type IdentifyUser,
   type CodexAgentProvider,
   mountCopilotRuntime,
+  resolveRuntimeAgents,
 } from "./copilot";
 import {
   createCredentialAdminService,
@@ -47,10 +49,21 @@ import {
 } from "./credentials";
 import { createDatabase } from "./db/client";
 import { resolveListenPort } from "./listen-port";
+import { createHealthReader } from "./health";
 import { isTrustedWebSocketOrigin } from "./origin";
 import { createPluginStore } from "./plugins/store";
 import { grantedTools } from "./plugins/tools";
+import { createEmbeddingClient } from "./knowledge/embeddings";
+import {
+  createKnowledgeSearchService,
+  knowledgeSearchTool,
+} from "./knowledge/search";
 import { createRunStore } from "./runs/store";
+import {
+  executeTaskWithAgent,
+  startAutomatedTaskExecutor,
+} from "./runs/executor";
+import type { AutomatedTask } from "./runs/store";
 import {
   createPackageStatusReader,
   loadTenantPackage,
@@ -298,6 +311,7 @@ const pluginStore = createPluginStore({
   encryptionKey: config.keyEncryptionKey,
   policy: () => policyStore.get(),
   approvals: approvalService,
+  allowPrivateHosts: config.computer?.allowPrivateHosts === true,
 });
 
 void recordAuditEvent(bootAuditStore, {
@@ -391,6 +405,171 @@ const stallGuard = createStallGuard({
   stallMs: config.agentStallTimeoutMs,
   auditStore: bootAuditStore,
 });
+const agentFetch = createAgentFetch({
+  allowPrivateHosts: config.computer?.allowPrivateHosts === true,
+});
+const resolveConfiguredModelApiKey = () =>
+  resolveModelApiKey({
+    encryptionKey: config.keyEncryptionKey,
+    reader: credentialStore,
+    provider: tenantPackage.model.provider,
+    keyId: tenantPackage.model.credentialSecretRef,
+    environment: process.env,
+  });
+
+const resolveEmbeddingApiKey = async () =>
+  process.env.EMBEDDING_API_KEY?.trim() ||
+  process.env.OPENAI_API_KEY?.trim() ||
+  (tenantPackage.model.provider === "openai"
+    ? await resolveConfiguredModelApiKey()
+    : null);
+const embedKnowledge = createEmbeddingClient({
+  apiKey: resolveEmbeddingApiKey,
+  ...(process.env.EMBEDDING_BASE_URL
+    ? { baseUrl: process.env.EMBEDDING_BASE_URL }
+    : {}),
+  ...(process.env.EMBEDDING_MODEL
+    ? { model: process.env.EMBEDDING_MODEL }
+    : {}),
+});
+const knowledgeSearch = createKnowledgeSearchService({
+  database,
+  embed: embedKnowledge,
+  audit: bootAuditStore,
+});
+const deploymentToolsFor = async (
+  actor: AgentActor,
+  botId: string,
+  run?: Parameters<typeof grantedTools>[0]["run"],
+) => [
+  ...(await grantedTools({
+    store: pluginStore,
+    botId,
+    actorId: actor.id,
+    actorRole: actor.role,
+    approvals: approvalService,
+    ...(run ? { run } : {}),
+  })),
+  knowledgeSearchTool(knowledgeSearch, actor),
+];
+
+const actorForAutomatedTask = async (task: AutomatedTask) => {
+  const roles = await roleRepository.rolesForUser(task.run.actorUserId);
+  return {
+    id: task.run.actorUserId,
+    role: roles.includes("admin") ? ("admin" as const) : ("user" as const),
+  };
+};
+
+const stopTaskExecutor = startAutomatedTaskExecutor({
+  runs: runStore,
+  execute: (task, signal) =>
+    executeTaskWithAgent(
+      task,
+      async (claimed) => {
+        if (signal.aborted || !claimed.run.agentId) return null;
+        const actor = await actorForAutomatedTask(claimed);
+        const agents = await resolveRuntimeAgents(
+          () => loadAgentsForActor(actor),
+          tenantPackage.model,
+          resolveConfiguredModelApiKey,
+          codexAgentProvider
+            ? { userId: actor.id, provider: codexAgentProvider }
+            : undefined,
+          stallGuard,
+          (botId, run) => deploymentToolsFor(actor, botId, run),
+          (botId, runId, taskContext) =>
+            mintRunAssertion(
+              {
+                botId,
+                actorId: actor.id,
+                runId,
+                ...(taskContext?.runId ? { taskRunId: taskContext.runId } : {}),
+                ...(taskContext?.channelId
+                  ? { channelId: taskContext.channelId }
+                  : {}),
+              },
+              config.keyEncryptionKey,
+            ),
+          agentFetch,
+        );
+        return agents[claimed.run.agentId] ?? null;
+      },
+      signal,
+    ),
+  onStarted: async (task) => {
+    if (task.source.kind === "delegation") {
+      await delegationStore.transition(
+        await actorForAutomatedTask(task),
+        task.source.id,
+        "in_progress",
+      );
+    }
+    await recordAuditEvent(bootAuditStore, {
+      actorUserId: task.run.actorUserId,
+      eventType: "task.execution_started",
+      targetType: "task_run",
+      targetId: task.run.id,
+      payload: {
+        source: task.source.kind,
+        sourceId: task.source.id,
+        attempt: task.run.attempt,
+      },
+    });
+  },
+  onSucceeded: async (task, result) => {
+    if (task.source.kind === "delegation") {
+      await delegationStore.transition(
+        await actorForAutomatedTask(task),
+        task.source.id,
+        "completed",
+        { result: result.output },
+      );
+    } else {
+      await notificationStore.create({
+        userId: task.run.actorUserId,
+        kind: "routine",
+        title: "Routine completed",
+        body: task.run.title,
+        targetUrl: `/channel/${task.run.channelId}`,
+        metadata: { routineId: task.source.id, runId: task.run.id },
+      });
+    }
+    await recordAuditEvent(bootAuditStore, {
+      actorUserId: task.run.actorUserId,
+      eventType: "task.execution_succeeded",
+      targetType: "task_run",
+      targetId: task.run.id,
+      payload: { source: task.source.kind, attempt: task.run.attempt },
+    });
+  },
+  onFailed: async (task, error) => {
+    if (task.source.kind === "delegation") {
+      await delegationStore.transition(
+        await actorForAutomatedTask(task),
+        task.source.id,
+        "failed",
+        { error },
+      );
+    } else {
+      await notificationStore.create({
+        userId: task.run.actorUserId,
+        kind: "routine",
+        title: "Routine needs attention",
+        body: task.run.title,
+        targetUrl: `/channel/${task.run.channelId}`,
+        metadata: { routineId: task.source.id, runId: task.run.id },
+      });
+    }
+    await recordAuditEvent(bootAuditStore, {
+      actorUserId: task.run.actorUserId,
+      eventType: "task.execution_failed",
+      targetType: "task_run",
+      targetId: task.run.id,
+      payload: { source: task.source.kind, attempt: task.run.attempt },
+    });
+  },
+});
 
 const app = createApp(
   config,
@@ -411,6 +590,7 @@ const app = createApp(
       credentialStore,
       createAuditStore(database),
     ),
+    bootAuditStore,
   ),
   // The runtime call: the model, per-actor agent loading, and the two identity
   // functions are how a run is attributed to a person.
@@ -418,26 +598,22 @@ const app = createApp(
     config,
     tenantPackage.model,
     loadAgentsForActor,
-    () =>
-      resolveModelApiKey({
-        encryptionKey: config.keyEncryptionKey,
-        reader: credentialStore,
-        provider: tenantPackage.model.provider,
-        keyId: tenantPackage.model.credentialSecretRef,
-        environment: process.env,
-      }),
+    resolveConfiguredModelApiKey,
     identifyUser,
     identifyActor,
     codexAgentProvider,
     stallGuard,
-    (actorId) => (botId, run) =>
-      grantedTools({
-        store: pluginStore,
+    (actorId) => async (botId, run) => {
+      const roles = await roleRepository.rolesForUser(actorId);
+      return deploymentToolsFor(
+        {
+          id: actorId,
+          role: roles.includes("admin") ? "admin" : "user",
+        },
         botId,
-        actorId,
-        approvals: approvalService,
-        ...(run ? { run } : {}),
-      }),
+        run,
+      );
+    },
     (actorId) => (botId, runId, task) =>
       mintRunAssertion(
         {
@@ -449,9 +625,7 @@ const app = createApp(
         },
         config.keyEncryptionKey,
       ),
-    createAgentFetch({
-      allowPrivateHosts: config.computer?.allowPrivateHosts === true,
-    }),
+    agentFetch,
   ),
   computerClient,
   // The only path to an acting call.
@@ -502,6 +676,28 @@ const app = createApp(
   workServices,
   codexManager,
   codexPreferences,
+  async ({ name, args, actorId }) => {
+    if (name !== "openbot_search_knowledge") return null;
+    const roles = await roleRepository.rolesForUser(actorId);
+    const tool = knowledgeSearchTool(knowledgeSearch, {
+      id: actorId,
+      role: roles.includes("admin") ? "admin" : "user",
+    });
+    try {
+      return { text: await tool.execute(args), isError: false };
+    } catch (error) {
+      return {
+        text:
+          error instanceof Error
+            ? `Knowledge search failed: ${error.message}`
+            : "Knowledge search failed.",
+        isError: true,
+      };
+    }
+  },
+  createHealthReader(database, async () =>
+    Boolean(await resolveConfiguredModelApiKey()),
+  ),
 );
 
 /**
@@ -660,6 +856,7 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
     void Promise.all([
       channelActivityListener.stop(),
       codexManager?.stopAll() ?? Promise.resolve(),
+      stopTaskExecutor(),
     ]).finally(() => process.exit(0));
   });
 }

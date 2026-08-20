@@ -37,9 +37,11 @@ export const auditEventTypes = [
   "credential.created",
   "credential.rotated",
   "credential.revoked",
+  "connector.sync_requested",
   "connector.sync_succeeded",
   "connector.sync_failed",
   "knowledge.searched",
+  "audit.evidence_exported",
   "agent.invoked",
   /**
    * A Bot's stream stopped producing anything and the turn was ended for it.
@@ -129,6 +131,9 @@ export const auditEventTypes = [
   "task.created",
   "task.retried",
   "task.status_changed",
+  "task.execution_started",
+  "task.execution_succeeded",
+  "task.execution_failed",
   "approval.requested",
   "approval.approved",
   "approval.declined",
@@ -390,4 +395,78 @@ export function auditQueryFromUrl(url: URL): AuditEventQuery {
     from: optional("from"),
     to: optional("to"),
   };
+}
+
+export type AuditEvidenceBundle = {
+  schema: "kayco.openbot.audit-evidence";
+  version: 1;
+  generatedAt: string;
+  query: Omit<AuditEventQuery, "cursor" | "limit">;
+  eventCount: number;
+  truncated: boolean;
+  integrity: {
+    algorithm: "SHA-256";
+    chainRoot: string;
+    description: string;
+  };
+  events: Array<AuditEvent & { evidenceHash: string }>;
+};
+
+/** Export up to 5,000 already-redacted audit rows with a deterministic hash chain. */
+export async function createAuditEvidenceBundle(
+  reader: AuditReader,
+  query: AuditEventQuery,
+  maximum = 5_000,
+): Promise<AuditEvidenceBundle> {
+  const cap = Math.max(1, Math.min(Math.trunc(maximum), 5_000));
+  const events: AuditEvent[] = [];
+  let cursor: string | undefined;
+  let hasMore = false;
+  do {
+    const page = await reader.list({ ...query, cursor, limit: 100 });
+    events.push(...page.events.slice(0, cap - events.length));
+    cursor = page.nextCursor;
+    hasMore = Boolean(cursor);
+  } while (cursor && events.length < cap);
+
+  let previous = "";
+  const chained: Array<AuditEvent & { evidenceHash: string }> = [];
+  for (const event of events) {
+    const evidenceHash = await sha256(`${previous}\n${canonicalJson(event)}`);
+    chained.push({ ...event, evidenceHash });
+    previous = evidenceHash;
+  }
+  const { cursor: _cursor, limit: _limit, ...filters } = query;
+  return {
+    schema: "kayco.openbot.audit-evidence",
+    version: 1,
+    generatedAt: new Date().toISOString(),
+    query: filters,
+    eventCount: chained.length,
+    truncated: hasMore,
+    integrity: {
+      algorithm: "SHA-256",
+      chainRoot: previous || (await sha256("")),
+      description:
+        "Each evidenceHash is SHA-256(previous hash, newline, canonical event JSON).",
+    },
+    events: chained,
+  };
+}
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, nested]) => `${JSON.stringify(key)}:${canonicalJson(nested)}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
+
+async function sha256(value: string) {
+  return Buffer.from(
+    await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value)),
+  ).toString("hex");
 }

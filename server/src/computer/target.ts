@@ -112,6 +112,7 @@ function isPrivateIpv6(hostname: string): boolean {
   const [first] = groups as [number, ...number[]];
   if (first >= 0xfe80 && first <= 0xfebf) return true; // fe80::/10
   if (first >= 0xfc00 && first <= 0xfdff) return true; // fc00::/7
+  if (first >= 0xff00) return true; // ff00::/8 multicast
   return false;
 }
 
@@ -120,18 +121,41 @@ function expandIpv6(hostname: string): number[] | null {
   const halves = hostname.split("::");
   if (halves.length > 2) return null;
 
-  const parse = (part: string) =>
-    part === ""
-      ? []
-      : part.split(":").map((group) => Number.parseInt(group, 16));
+  const parse = (part: string) => parseIpv6Groups(part);
   const head = parse(halves[0] ?? "");
   const tail = halves.length === 2 ? parse(halves[1] ?? "") : [];
-  if ([...head, ...tail].some((group) => Number.isNaN(group))) return null;
+  if (!head || !tail) return null;
 
   const missing = 8 - head.length - tail.length;
   if (halves.length === 1) return head.length === 8 ? head : null;
   if (missing < 0) return null;
   return [...head, ...Array(missing).fill(0), ...tail];
+}
+
+function parseIpv6Groups(part: string): number[] | null {
+  if (!part) return [];
+  const raw = part.split(":");
+  const dotted = raw.at(-1);
+  if (dotted?.includes(".")) {
+    const octets = dotted.split(".").map(Number);
+    if (
+      octets.length !== 4 ||
+      octets.some(
+        (value) => !Number.isInteger(value) || value < 0 || value > 255,
+      )
+    ) {
+      return null;
+    }
+    const [a = 0, b = 0, c = 0, d = 0] = octets;
+    raw.splice(
+      raw.length - 1,
+      1,
+      (a * 256 + b).toString(16),
+      (c * 256 + d).toString(16),
+    );
+  }
+  if (raw.some((group) => !/^[0-9a-f]{1,4}$/i.test(group))) return null;
+  return raw.map((group) => Number.parseInt(group, 16));
 }
 
 function isPrivateIpv4(hostname: string): boolean {
@@ -142,11 +166,15 @@ function isPrivateIpv4(hostname: string): boolean {
     return false;
   }
   const [a, b] = octets as [number, number, number, number];
+  if (a === 0) return true;
   if (a === 10) return true;
   if (a === 127) return true;
+  if (a === 100 && b >= 64 && b <= 127) return true;
   if (a === 169 && b === 254) return true; // link-local, includes metadata
   if (a === 172 && b >= 16 && b <= 31) return true;
   if (a === 192 && b === 168) return true;
+  if (a === 198 && (b === 18 || b === 19)) return true;
+  if (a >= 224) return true;
   return false;
 }
 

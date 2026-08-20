@@ -43,6 +43,27 @@
       "when": 1787221755867,
       "tag": "0005_futuristic_blue_shield",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1787225973101,
+      "tag": "0006_numerous_warpath",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1787227284155,
+      "tag": "0007_misty_sentry",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1787227993942,
+      "tag": "0008_aspiring_genesis",
+      "breakpoints": true
     }
   ]
 }

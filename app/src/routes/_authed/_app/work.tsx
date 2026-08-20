@@ -14,7 +14,6 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { z } from "zod";
-import { stashAssignedWork } from "@/components/channels/transcript-messages";
 import { PageShell } from "@/components/layout/page-shell";
 import { Button } from "@/components/ui/button";
 import {
@@ -222,24 +221,17 @@ function QueueView({
 }) {
   const navigate = useNavigate();
   const agentName = new Map(agents.map((agent) => [agent.id, agent.name]));
-  const workByRun = new Map<
-    string,
-    { text: string; channelId: string; kind: "routine" | "delegation" }
-  >();
+  const workByRun = new Map<string, { channelId: string }>();
   for (const routine of data.routines) {
     if (routine.latestRun) {
       workByRun.set(routine.latestRun.id, {
-        text: routine.instruction,
         channelId: routine.channelId,
-        kind: "routine",
       });
     }
   }
   for (const delegation of data.delegations) {
     workByRun.set(delegation.taskRunId, {
-      text: delegation.instructions,
       channelId: delegation.targetChannelId,
-      kind: "delegation",
     });
   }
   const visibleRuns = data.runs.slice(0, 40);
@@ -276,23 +268,29 @@ function QueueView({
                         ? (agentName.get(run.agentId) ?? "Coworker")
                         : "Coworker"}{" "}
                       · {relativeTime(run.createdAt)}
+                      {assigned
+                        ? ` · attempt ${run.attempt}/${run.maxAttempts} · ${formatBudget(run.maxRuntimeMs)} budget`
+                        : ""}
                     </p>
+                    {run.nextAttemptAt ? (
+                      <p className="mt-1 text-xs text-amber-700 dark:text-amber-300">
+                        Retry scheduled {relativeTime(run.nextAttemptAt)}
+                      </p>
+                    ) : null}
                     {run.error ? (
                       <p className="mt-2 line-clamp-2 text-sm text-destructive">
                         {run.error}
+                      </p>
+                    ) : null}
+                    {run.output ? (
+                      <p className="mt-2 line-clamp-3 whitespace-pre-wrap text-sm text-muted-foreground">
+                        {run.output}
                       </p>
                     ) : null}
                   </div>
                   <Button
                     className="shrink-0"
                     onClick={() => {
-                      if (assigned && run.status === "queued") {
-                        stashAssignedWork(
-                          assigned.channelId,
-                          assigned.text,
-                          run.id,
-                        );
-                      }
                       void navigate({
                         to: "/channel/$channelId",
                         params: {
@@ -301,15 +299,10 @@ function QueueView({
                       });
                     }}
                     size="sm"
-                    variant={
-                      run.status === "queued" && assigned
-                        ? "default"
-                        : "outline"
-                    }
+                    type="button"
+                    variant="outline"
                   >
-                    {run.status === "queued" && assigned
-                      ? "Start task"
-                      : "Open"}
+                    Open
                   </Button>
                 </div>
               );
@@ -1646,6 +1639,12 @@ function relativeTime(value: string) {
   if (absolute < 86_400_000)
     return relativeFormatter.format(Math.round(elapsed / 3_600_000), "hour");
   return relativeFormatter.format(Math.round(elapsed / 86_400_000), "day");
+}
+
+function formatBudget(milliseconds: number) {
+  return milliseconds >= 60_000
+    ? `${Math.round(milliseconds / 60_000)}m`
+    : `${Math.round(milliseconds / 1_000)}s`;
 }
 
 type WorkAction = ReturnType<

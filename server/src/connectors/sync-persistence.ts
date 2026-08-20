@@ -5,7 +5,6 @@ import {
   connectorCursors,
   documentAcls,
   documents,
-  syncRuns,
 } from "../db/schema";
 import type { ConnectorChange } from "./contract";
 
@@ -79,12 +78,6 @@ export function createSyncPersistence(
               );
           }
         }
-        await transaction.insert(syncRuns).values({
-          connectorInstanceId,
-          status: "succeeded",
-          completedAt: new Date(),
-          stats: { changes: changes.length },
-        });
         if (cursor !== null) {
           await transaction
             .insert(connectorCursors)

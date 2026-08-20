@@ -8,6 +8,7 @@ import {
 } from "../computer/policy";
 import {
   type CredentialSecretReader,
+  type CredentialStore,
   decryptCredentialForUse,
 } from "../credentials";
 import type { Database } from "../db/client";
@@ -26,6 +27,12 @@ import {
   resolveServerUrl,
 } from "./catalogue";
 import { callTool as callRemoteTool, listTools, McpServerError } from "./mcp";
+import {
+  beginMcpOAuth,
+  finishMcpOAuth,
+  type McpOAuthVault,
+  mcpOAuthProvider,
+} from "./oauth";
 
 /**
  * Plugins: what this deployment has added, which Bots may use it, and the one path a call takes.
@@ -60,6 +67,7 @@ export type ServerRecord = {
   /** `first-party` or `custom`. Shown wherever the server is, never inferred by a reader. */
   provenance: string;
   hasCredential: boolean;
+  authMode: "token" | "oauth";
   toolsRefreshedAt: string | null;
   lastError: string | null;
   addedBy: string | null;
@@ -163,11 +171,14 @@ const iso = (value: Date | string | null): string | null =>
 export type PluginStoreOptions = {
   database: Database;
   auditStore: AuditStore;
-  credentials: CredentialSecretReader;
+  credentials: CredentialSecretReader &
+    Partial<Pick<CredentialStore, "create" | "replaceEncryptedValue">>;
   encryptionKey: string;
   /** Read at call time, never captured, so a policy changed a moment ago applies to this call. */
   policy: () => ActionPolicy;
   approvals?: ApprovalService;
+  /** Development-only escape hatch shared with agent/computer outbound policy. */
+  allowPrivateHosts?: boolean;
 };
 
 export function createPluginStore(options: PluginStoreOptions) {
@@ -199,6 +210,41 @@ export function createPluginStore(options: PluginStoreOptions) {
   ): Promise<string | undefined> {
     if (!credentialId) return undefined;
     return decryptCredentialForUse(encryptionKey, credentials, credentialId);
+  }
+
+  function oauthVault(): McpOAuthVault {
+    if (!credentials.create || !credentials.replaceEncryptedValue) {
+      throw new Error(
+        "The credential vault cannot persist MCP OAuth sessions.",
+      );
+    }
+    return credentials as McpOAuthVault;
+  }
+
+  async function connectionFor(row: {
+    url: string;
+    credentialId: string | null;
+    authMode: string;
+  }) {
+    if (row.authMode === "oauth") {
+      if (!row.credentialId) {
+        throw new Error("This MCP server has not finished OAuth setup.");
+      }
+      return {
+        url: row.url,
+        oauthProvider: await mcpOAuthProvider({
+          vault: oauthVault(),
+          encryptionKey,
+          credentialId: row.credentialId,
+        }),
+        allowPrivateHosts: options.allowPrivateHosts,
+      };
+    }
+    return {
+      url: row.url,
+      token: await tokenFor(row.credentialId),
+      allowPrivateHosts: options.allowPrivateHosts,
+    };
   }
 
   async function requireServer(serverId: string) {
@@ -234,6 +280,7 @@ export function createPluginStore(options: PluginStoreOptions) {
       key: string;
       instanceHost?: string;
       credentialId?: string;
+      authMode?: "token" | "oauth";
       by: string;
     }): Promise<ServerRecord> {
       const resolved = resolveServerUrl(input.key, input.instanceHost);
@@ -247,6 +294,7 @@ export function createPluginStore(options: PluginStoreOptions) {
           vendor: resolved.entry.vendor,
           url: resolved.url,
           credentialId: input.credentialId ?? null,
+          authMode: input.authMode ?? "token",
           addedBy: input.by,
         })
         .onConflictDoUpdate({
@@ -254,6 +302,7 @@ export function createPluginStore(options: PluginStoreOptions) {
           set: {
             url: resolved.url,
             credentialId: input.credentialId ?? null,
+            authMode: input.authMode ?? "token",
             addedBy: input.by,
             updatedAt: new Date(),
           },
@@ -294,6 +343,7 @@ export function createPluginStore(options: PluginStoreOptions) {
       title: string;
       url: string;
       credentialId?: string;
+      authMode?: "token" | "oauth";
       by: string;
     }): Promise<ServerRecord> {
       const refusal = customUrlRefusal(input.url);
@@ -322,6 +372,7 @@ export function createPluginStore(options: PluginStoreOptions) {
           url: input.url,
           provenance: "custom",
           credentialId: input.credentialId ?? null,
+          authMode: input.authMode ?? "token",
           addedBy: input.by,
         })
         .onConflictDoUpdate({
@@ -330,6 +381,7 @@ export function createPluginStore(options: PluginStoreOptions) {
             title: input.title,
             url: input.url,
             credentialId: input.credentialId ?? null,
+            authMode: input.authMode ?? "token",
             addedBy: input.by,
             updatedAt: new Date(),
           },
@@ -368,6 +420,66 @@ export function createPluginStore(options: PluginStoreOptions) {
       });
     },
 
+    async beginOAuth(serverId: string, redirectUrl: string, by: string) {
+      const { row } = await requireServer(serverId);
+      const started = await beginMcpOAuth({
+        vault: oauthVault(),
+        encryptionKey,
+        serverId,
+        serverUrl: row.url,
+        redirectUrl,
+        initiatedBy: by,
+        credentialId: row.authMode === "oauth" ? row.credentialId : null,
+        allowPrivateHosts: options.allowPrivateHosts,
+      });
+      await database
+        .update(mcpServers)
+        .set({
+          authMode: "oauth",
+          credentialId: started.credentialId,
+          lastError: null,
+          updatedAt: new Date(),
+        })
+        .where(eq(mcpServers.id, serverId));
+      await recordAuditEvent(auditStore, {
+        eventType: "configuration.changed",
+        targetType: "mcp_server",
+        targetId: serverId,
+        payload: { actor: by, change: "mcp_oauth_started", server: serverId },
+      });
+      return { authorizationUrl: started.authorizationUrl };
+    },
+
+    async completeOAuth(
+      serverId: string,
+      code: string,
+      state: string,
+      by: string,
+    ) {
+      const { row } = await requireServer(serverId);
+      if (row.authMode !== "oauth" || !row.credentialId) {
+        throw new Error("OAuth setup was not started for this MCP server.");
+      }
+      await finishMcpOAuth({
+        vault: oauthVault(),
+        encryptionKey,
+        credentialId: row.credentialId,
+        serverId,
+        serverUrl: row.url,
+        state,
+        code,
+        initiatedBy: by,
+        allowPrivateHosts: options.allowPrivateHosts,
+      });
+      await this.refreshTools(serverId);
+      await recordAuditEvent(auditStore, {
+        eventType: "configuration.changed",
+        targetType: "mcp_server",
+        targetId: serverId,
+        payload: { actor: by, change: "mcp_oauth_completed", server: serverId },
+      });
+    },
+
     /**
      * Ask a server what it offers and replace what we hold.
      *
@@ -378,8 +490,7 @@ export function createPluginStore(options: PluginStoreOptions) {
       const { row } = await requireServer(serverId);
 
       try {
-        const token = await tokenFor(row.credentialId);
-        const tools = await listTools({ url: row.url, token });
+        const tools = await listTools(await connectionFor(row));
 
         await database.delete(mcpTools).where(eq(mcpTools.serverId, serverId));
         if (tools.length > 0) {
@@ -454,6 +565,7 @@ export function createPluginStore(options: PluginStoreOptions) {
           docsUrl: entry?.docsUrl ?? "",
           provenance: row.provenance,
           hasCredential: row.credentialId !== null,
+          authMode: row.authMode === "oauth" ? "oauth" : "token",
           toolsRefreshedAt: iso(row.toolsRefreshedAt),
           lastError: row.lastError,
           addedBy: row.addedBy,
@@ -901,9 +1013,8 @@ export function createPluginStore(options: PluginStoreOptions) {
       }
 
       try {
-        const token = await tokenFor(row.credentialId);
         const result = await callRemoteTool(
-          { url: row.url, token },
+          await connectionFor(row),
           toolName,
           args,
         );

@@ -6,6 +6,10 @@ export type ConnectorStatus = {
   name: string;
   roots: string[];
   configured: boolean;
+  status?: "pending" | "running" | "succeeded" | "failed";
+  lastSyncAt?: string | null;
+  nextSyncAt?: string | null;
+  lastError?: string | null;
 };
 
 export const connectorKeys = {

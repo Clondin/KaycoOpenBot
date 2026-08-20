@@ -4,7 +4,7 @@ OpenBot combines a React app, a Hono API server, PostgreSQL, CopilotKit Intellig
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="../assets/architecture-dark.svg">
-  <img src="../assets/architecture-light.svg" alt="A turn goes from the app to the server, which sends it to a Bot over AG-UI. Every tool call the Bot makes returns through the gateway, which resolves the target, decides it against the configured policy, records an audit row, and only then acts, or refuses and names the rule. Allowed actions reach that Bot's own computer, one container each holding its own Chromium, logins and workspace, created by the supervisor. Every decision lands in PostgreSQL; threads and memory live in CopilotKit Intelligence.">
+  <img src="../assets/architecture-light.svg" alt="A turn goes from the app to the server and a Bot over AG-UI. Tool calls return through the policy and audit gateway before reaching an isolated computer. Durable tasks and permission-aware knowledge live in PostgreSQL, a leased worker synchronizes connectors, and conversation threads live in CopilotKit Intelligence.">
 </picture>
 
 Regenerate it with `bun run diagram` after changing anything it shows.
@@ -15,6 +15,7 @@ Regenerate it with `bun run diagram` after changing anything it shows.
 | ------------------------ | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
 | `app`                    | 3010                       | React/Vite interface for channels, Bot chat, the work control center, live screen, settings, and admin pages.                               |
 | `server`                 | 3001                       | API, CopilotKit runtime, auth, roles, tenant package, coworkers, channels, durable work, policy, audit, credentials, plugins, components, and connectors. |
+| `connector-worker`       | internal                   | Leases connector jobs, syncs Google Drive, creates embeddings, persists ACLs and chunks, and retries failed syncs.                         |
 | `agent-computer`         | 4100                       | Chromium, `/workspace`, browser profile, screenshots, snapshots, and file tools.                                                            |
 | `agent-bot`              | 4200                       | Proof-of-concept AG-UI Bot.                                                                                                                     |
 | `agent-langgraph`        | 4201                       | LangGraph AG-UI Bot.                                                                                                                        |
@@ -22,7 +23,7 @@ Regenerate it with `bun run diagram` after changing anything it shows.
 | PostgreSQL with pgvector | 5432                       | Product data, audit rows, credentials, policy, grants, channels, projects, routines, handoffs, inspectable memory, components, connector state, and knowledge records. |
 | CopilotKit Intelligence  | external                   | Durable conversation threads and realtime gateway.                                                                                          |
 
-`scripts/start.sh` starts PostgreSQL, `agent-computer`, `agent-bot`, `agent-langgraph`, and the supervisor through Docker Compose, then starts `server` and `app` on the host.
+`scripts/start.sh` starts PostgreSQL, the connector worker, `agent-computer`, `agent-bot`, `agent-langgraph`, and the supervisor through Docker Compose, then starts `server` and `app` on the host.
 
 The compose file also defines optional SPIRE services. `start.sh` does not start them.
 
@@ -34,7 +35,8 @@ The compose file also defines optional SPIRE services. `start.sh` does not start
 4. CopilotKit runtime sends the turn to the configured AG-UI endpoint. Remote coworkers also receive a short-lived, signed assertion tying the run to the coworker, signed-in actor, and durable channel task when one opened the turn.
 5. The surface registers only tools that must run in the browser, such as computer controls and components.
 6. Built-in coworkers execute MCP calls directly on the server. Remote coworkers call the server back with their per-coworker token and signed run assertion.
-7. Browser, file, and MCP actions pass through the same authorization, policy, approval, and audit boundaries before the server streams results back to the app and Intelligence thread. A server-side MCP call that needs approval waits on its validated durable task and retries once with the exact approved request.
+7. Every coworker receives the same server-side knowledge-search tool. Retrieval combines lexical and vector rank, applies connector ACL allow/deny rules in SQL for the signed-in actor, and returns citations rather than raw connector credentials.
+8. Browser, file, and MCP actions pass through the same authorization, policy, approval, and audit boundaries before the server streams results back to the app and Intelligence thread. A server-side MCP call that needs approval waits on its validated durable task and retries once with the exact approved request.
 
 ## Browser action governance
 
@@ -149,6 +151,13 @@ tokens are shown once and only a cryptographic hash is stored. Starting queued
 routine or delegation work reuses the reserved task run rather than creating a
 second attempt.
 
+A background executor leases those queued runs with row locks, heartbeats while
+they execute, and recovers expired leases after a process dies. Attempts have a
+bounded runtime, exponential retry scheduling, durable output, and a maximum
+attempt count. Routine and delegation status, notifications, and audit events
+are settled from the same terminal result so the UI cannot claim success before
+the actual Bot run succeeds.
+
 Relevant user and coworker memory is supplied to a conversation as system
 context and can also be recalled explicitly through a Bot tool. The memory UI
 remains the source of truth: people can inspect, pin, edit, or remove entries.
@@ -182,7 +191,7 @@ MCP servers and skills share the plugin grant table, but they have different own
 - MCP tools are admin-governed because they can reach external systems with stored credentials.
 - Skills are reusable instructions. A person can create personal skills and attach them only to Bots they own. Administrators create deployment skills.
 
-The curated MCP catalogue contains Atlassian, Box, Slack, Salesforce, and ServiceNow. Custom MCP servers must pass URL checks; unknown tools and custom-server tools are treated as writes unless positively classified as reads.
+The curated MCP catalogue contains Atlassian, Box, Slack, Salesforce, and ServiceNow. Custom MCP servers must pass URL checks; unknown tools and custom-server tools are treated as writes unless positively classified as reads. Servers can use either a write-only bearer token or standards-based OAuth with discovery, dynamic client registration, PKCE, encrypted refresh/access tokens, and a state-bound callback.
 
 Every MCP call checks the grant first, then evaluates the same action policy engine with MCP context, then audits the result. MCP descriptions and execution now live on the server, so a coworker can use a granted MCP tool during an unattended run without an open browser tab. When a call matches an approval rule, the durable task is marked as waiting, the server waits for the person's decision, and only the fingerprinted approved request can be consumed on retry. A remote coworker authenticates that callback with a per-coworker token, and the server verifies a short-lived signed assertion before trusting the Bot, actor, task, and channel identities. Only a hash of the long-lived callback token is stored.
 
@@ -200,9 +209,25 @@ Required package files:
 - `model.yaml`
 - `knowledge.yaml`
 
-The server validates the package at startup. Channel agent IDs must match declared agents. Knowledge sources currently support Google Drive and Microsoft OneDrive declarations.
+The server validates the package at startup. Channel agent IDs must match declared agents. Knowledge source declarations support Google Drive and Microsoft OneDrive; the installed worker currently implements Google Drive. Administrators configure domain-wide delegation and queue an immediate sync from `/admin/connectors`.
 
-Connector credentials are stored through the credential vault and referenced by id, not stored inline in YAML.
+Connector credentials are stored through the credential vault and referenced by id, not stored inline in YAML. The worker recursively crawls configured roots, exports supported Google Docs and Sheets content, resumes from Drive change cursors, chunks and embeds documents, and persists source permissions beside each chunk. Sync jobs are leased and retried so a worker restart does not strand a connector.
+
+Search authorization is part of the database query, not a post-filter. User id,
+email, groups, domain, public grants, and explicit denies are considered before
+ranking results. Query text is not written to the audit trail; its hash and the
+returned document ids are.
+
+## Operations and evidence
+
+- `/health` is a process liveness check.
+- `/health/ready` checks PostgreSQL, model configuration, expired task leases, and failed connectors and returns `503` when degraded.
+- `/api/admin/health` returns the detailed readiness report to administrators.
+- `/admin/audit` can download a redacted JSON evidence bundle with canonical event hashes, a SHA-256 chain, filters, truncation status, and a root hash.
+
+The evidence chain detects modification inside the exported bundle; it is an
+integrity artifact, not an external signature. The deterministic evaluation
+suites cover policy decisions and knowledge ACL visibility and run in CI.
 
 ## Security boundaries
 
@@ -210,6 +235,7 @@ Connector credentials are stored through the credential vault and referenced by 
 - `OPENBOT_DEV_NO_AUTH=true` is local-only and is refused with `NODE_ENV=production`.
 - `KEY_ENCRYPTION_KEY` must be a base64-encoded 32-byte value. The example key is refused with `NODE_ENV=production`.
 - Credential plaintext is encrypted at rest, never returned by APIs, and redacted from audit events.
-- Browser navigation allows `http` and `https`; cloud metadata addresses are refused under every configuration.
+- Browser, WebSocket, agent endpoint, MCP, embedding, and OAuth requests re-resolve every redirect hop, reject URL credentials, private or mixed DNS results, rebinding, and cloud metadata addresses, and strip secrets on cross-origin redirects.
 - `AGENT_COMPUTER_ALLOW_PRIVATE_HOSTS=true` is for local development only.
+- These application controls complement, but do not replace, production container and network egress policy.
 - Computer tokens and supervisor tokens must be long random values outside local development.

@@ -2,6 +2,8 @@ import type { Message } from "@ag-ui/core";
 import {
   IconChevronDown,
   IconChevronUp,
+  IconClock,
+  IconPaperclip,
   IconSearch,
   IconX,
 } from "@tabler/icons-react";
@@ -21,13 +23,67 @@ import {
   type CommandOption,
   Composer,
   type ComposerDraft,
+  type ComposerInsertion,
   type QueueAction,
   type QueuedMessage,
   reduceQueue,
 } from "@/components/channels/composer";
 
+function QueuedTray({
+  onRemove,
+  queued,
+}: {
+  onRemove: (id: string) => void;
+  queued: readonly QueuedMessage[];
+}) {
+  return (
+    <section
+      aria-label="Messages waiting to send"
+      className="mb-2 overflow-hidden rounded-xl border bg-muted/30"
+    >
+      <header className="flex items-center gap-1.5 border-b px-3 py-2 text-xs font-medium">
+        <IconClock className="size-3.5 text-primary" />
+        Up next
+        <span className="font-normal text-muted-foreground">
+          · sends when the current task finishes
+        </span>
+      </header>
+      <ol className="divide-y">
+        {queued.map((message) => (
+          <li
+            className="flex min-w-0 items-center gap-2 px-3 py-2"
+            key={message.id}
+          >
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-sm">{message.text || "Attachment"}</p>
+              {message.attachments.length > 0 ? (
+                <p className="mt-0.5 flex items-center gap-1 text-[11px] text-muted-foreground">
+                  <IconPaperclip className="size-3" />
+                  {message.attachments.length} attachment
+                  {message.attachments.length === 1 ? "" : "s"}
+                </p>
+              ) : null}
+            </div>
+            <Button
+              aria-label={`Remove queued message: ${message.text || "attachment"}`}
+              onClick={() => onRemove(message.id)}
+              size="icon-sm"
+              type="button"
+              variant="ghost"
+            >
+              <IconX />
+            </Button>
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
+}
+
 export function ConversationView({
   messages,
+  activity,
+  assistantName,
   busy = false,
   notice,
   agents = [],
@@ -43,8 +99,13 @@ export function ConversationView({
   draftKey,
   searchOpen = false,
   onCloseSearch,
+  onRetryLatest,
+  onBranchMessage,
 }: {
   messages: readonly Message[];
+  /** Task progress, approvals, and other live work shown in the active turn. */
+  activity?: ReactNode;
+  assistantName?: string;
   busy?: boolean;
   /** Shown above the composer. An error, or why this conversation is read-only. */
   notice?: ReactNode;
@@ -92,6 +153,8 @@ export function ConversationView({
   draftKey?: string;
   searchOpen?: boolean;
   onCloseSearch?: () => void;
+  onRetryLatest?: () => void;
+  onBranchMessage?: (text: string, role: "user" | "assistant") => void;
 }) {
   /*
    * THE QUEUE LIVES HERE BECAUSE BOTH HALVES OF IT DO.
@@ -129,6 +192,7 @@ export function ConversationView({
   const [running, setRunning] = useState(false);
   const inFlight = pending || running;
   const [searchQuery, setSearchQuery] = useState("");
+  const [insertion, setInsertion] = useState<ComposerInsertion | undefined>();
   const [activeSearchIndex, setActiveSearchIndex] = useState(0);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const searchMatches = searchableMessageIds(messages, searchQuery);
@@ -137,6 +201,24 @@ export function ConversationView({
       ? 0
       : Math.min(activeSearchIndex, searchMatches.length - 1);
   const activeSearchMessageId = searchMatches[boundedSearchIndex];
+  const editMessage = useCallback((text: string) => {
+    setInsertion({ id: crypto.randomUUID(), mode: "replace", text });
+  }, []);
+  const quoteMessage = useCallback(
+    (text: string, role: "user" | "assistant") => {
+      const label = role === "assistant" ? "Coworker" : "You";
+      const quoted = text
+        .split("\n")
+        .map((line) => `> ${line}`)
+        .join("\n");
+      setInsertion({
+        id: crypto.randomUUID(),
+        mode: "append",
+        text: `_${label} wrote:_\n${quoted}\n\n`,
+      });
+    },
+    [],
+  );
 
   useEffect(() => {
     if (searchOpen) searchInputRef.current?.focus();
@@ -241,18 +323,20 @@ export function ConversationView({
          * conversation to change nothing.
          */}
         <ChatTranscript
+          activity={activity}
+          assistantName={assistantName}
           busy={busy}
           channelId={channelId}
           commandNames={(commands ?? [])
             .map((command) => command.name)
             .join(",")}
           messages={messages}
+          onBranchMessage={onBranchMessage}
+          onEditMessage={editMessage}
+          onQuoteMessage={quoteMessage}
+          onRetryMessage={onRetryLatest}
           searchQuery={searchOpen ? searchQuery : ""}
           activeSearchMessageId={searchOpen ? activeSearchMessageId : undefined}
-          onRemoveQueued={(id) => {
-            apply({ id, type: "remove" });
-          }}
-          queued={queued}
           {...(stopped ? { stopped } : {})}
         />
       </div>
@@ -324,6 +408,12 @@ export function ConversationView({
             </Button>
           </div>
         ) : null}
+        {queued.length > 0 ? (
+          <QueuedTray
+            onRemove={(id) => apply({ id, type: "remove" })}
+            queued={queued}
+          />
+        ) : null}
         {notice}
         <Composer
           agents={agents}
@@ -332,6 +422,7 @@ export function ConversationView({
           compact
           disabled={disabled}
           draftKey={draftKey}
+          insertion={insertion}
           onQueue={
             queueWhileBusy
               ? (draft) => {

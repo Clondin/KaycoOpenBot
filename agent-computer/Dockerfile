@@ -11,8 +11,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends unzip \
 ENV PATH="/root/.bun/bin:${PATH}"
 
 WORKDIR /app
-COPY agent-computer/package.json ./
-RUN bun install
+COPY agent-computer/package.json agent-computer/bun.lock ./
+RUN bun install --frozen-lockfile
 
 COPY agent-computer/src ./src
 

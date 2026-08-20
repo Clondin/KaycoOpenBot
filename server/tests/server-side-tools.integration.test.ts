@@ -50,6 +50,7 @@ const store = createPluginStore({
   credentials: { readSecret: async () => null },
   encryptionKey: "x".repeat(44),
   policy: () => policy,
+  allowPrivateHosts: true,
 });
 
 const mock = new MCPMock();

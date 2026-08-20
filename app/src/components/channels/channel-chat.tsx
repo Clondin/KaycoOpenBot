@@ -5,6 +5,7 @@ import {
   useCopilotKit,
 } from "@copilotkit/react-core/v2";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toAgentOptions } from "@/components/channels/composer";
 import {
@@ -15,13 +16,19 @@ import { ConversationView } from "@/components/channels/conversation-view";
 import { TaskRunStatus } from "@/components/tasks/task-run-status";
 import {
   seedMessage,
+  stashFirstMessage,
+  stashRoutedMessage,
   takeAssignedWork,
   takeFirstMessage,
+  takeRoutedMessage,
   transcriptMessages,
 } from "@/components/channels/transcript-messages";
 import { agentListQueryOptions } from "@/lib/agents/queries";
-import { recordChannelActivityMutationOptions } from "@/lib/channels/mutations";
-import type { AgentChannel } from "@/lib/channels/queries";
+import {
+  createChannelMutationOptions,
+  recordChannelActivityMutationOptions,
+} from "@/lib/channels/mutations";
+import { channelKeys, type AgentChannel } from "@/lib/channels/queries";
 import { useActiveBot } from "@/lib/copilot/active-bot";
 import { useActiveRun } from "@/lib/copilot/active-run";
 import { ConversationProvider } from "@/lib/copilot/conversation";
@@ -51,13 +58,16 @@ export function ChannelChat({
   runtimeAgentId,
   searchOpen = false,
   onCloseSearch,
+  onSelectAgent,
 }: {
   channel: AgentChannel;
   runtimeAgentId: string;
   searchOpen?: boolean;
   onCloseSearch?: () => void;
+  onSelectAgent?: (agentId: string) => void;
 }) {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   // The core attaches the frontend tool registry; direct agent runs do not.
   const { copilotkit } = useCopilotKit();
   // Mentions are scoped to the channel's permitted agents.
@@ -122,10 +132,18 @@ export function ChannelChat({
    * agent has its own messages because joining a fresh thread can temporarily empty the agent.
    */
   const [assigned] = useState(() => takeAssignedWork(channel.id));
+  const [routed] = useState(() =>
+    takeRoutedMessage(channel.id, runtimeAgentId),
+  );
   const [firstMessage] = useState(() =>
     assigned
       ? { text: assigned.text, attachments: [] as ComposerAttachment[] }
-      : takeFirstMessage(channel.id),
+      : routed
+        ? {
+            text: routed.draft.text,
+            attachments: routed.draft.attachments,
+          }
+        : takeFirstMessage(channel.id),
   );
   const [seed] = useState<Message | null>(() =>
     firstMessage
@@ -140,6 +158,7 @@ export function ChannelChat({
   /** Cleared by the send-on-mount effect without restarting it. */
   const seedRef = useRef(firstMessage);
   const assignedRunRef = useRef(assigned?.runId);
+  const routedRef = useRef(routed);
 
   /** Promise gate for ordering the first message after the thread join when possible. */
   const openJoinGate = useRef<() => void>(() => {});
@@ -248,6 +267,9 @@ export function ChannelChat({
    * Tell the roster what was just said. Failures here must not block the conversation.
    */
   const recordActivity = useMutation(recordChannelActivityMutationOptions());
+  const createBranch = useMutation(createChannelMutationOptions(queryClient));
+  const createBranchRef = useRef(createBranch.mutateAsync);
+  createBranchRef.current = createBranch.mutateAsync;
   const report = (text: string, agentId: string | null) => {
     const trimmed = text.trim();
     if (!trimmed) return;
@@ -533,6 +555,51 @@ export function ChannelChat({
   const askFromComponent = useCallback((text: string) => {
     void sayRef.current(text);
   }, []);
+  const latestRunIdRef = useRef(runHistory.data?.[0]?.id);
+  latestRunIdRef.current = runHistory.data?.[0]?.id;
+  const retryRun = useCallback((runId: string) => {
+    void sayRef
+      .current("Please retry the last request in this conversation.", [], runId)
+      .catch(() => undefined);
+  }, []);
+  const retryLatest = useCallback(() => {
+    void sayRef
+      .current(
+        "Please retry the previous response. Re-check the request and produce a fresh answer.",
+        [],
+        latestRunIdRef.current,
+      )
+      .catch(() => undefined);
+  }, []);
+  const branchMessage = useCallback(
+    (text: string, role: "user" | "assistant") => {
+      void (async () => {
+        try {
+          const branch = await createBranchRef.current([runtimeAgentId]);
+          queryClient.setQueryData(channelKeys.detail(branch.id), branch);
+          const quoted = text
+            .split("\n")
+            .map((line) => `> ${line}`)
+            .join("\n");
+          stashFirstMessage(
+            branch.id,
+            `Continue from this ${role === "assistant" ? "coworker response" : "message"}:\n\n${quoted}`,
+          );
+          await navigate({
+            params: { channelId: branch.id },
+            to: "/channel/$channelId",
+          });
+        } catch (error) {
+          setRunError(
+            error instanceof Error
+              ? error.message
+              : "A new conversation could not be started.",
+          );
+        }
+      })();
+    },
+    [navigate, queryClient, runtimeAgentId],
+  );
 
   /**
    * Send the create-channel seed once, after the join gate opens or the backstop expires.
@@ -551,9 +618,11 @@ export function ChannelChat({
       ]);
       const existingRunId = assignedRunRef.current;
       assignedRunRef.current = undefined;
+      const routedMessage = routedRef.current;
+      routedRef.current = null;
       await sayRef.current(
         pending.text,
-        [],
+        routedMessage?.skillInstructions ?? [],
         undefined,
         existingRunId,
         pending.attachments,
@@ -566,7 +635,12 @@ export function ChannelChat({
   return (
     <ConversationProvider ask={askFromComponent}>
       <ConversationView
+        activity={<TaskRunStatus channelId={channel.id} onRetry={retryRun} />}
         agents={toAgentOptions(agentProfiles, channel.agentIds)}
+        assistantName={
+          agentProfiles?.find((profile) => profile.id === runtimeAgentId)
+            ?.name ?? "Coworker"
+        }
         busy={agent.isRunning}
         // The `/` menu exposes only skills granted to this Bot.
         commands={skillCommands}
@@ -574,43 +648,56 @@ export function ChannelChat({
         // Readiness is handled by `say`; deletion is the only disabled-chat state.
         disabled={!channel.active}
         messages={transcriptMessages(agent.messages, seed)}
+        onBranchMessage={branchMessage}
+        onRetryLatest={retryLatest}
         notice={
-          <>
-            <TaskRunStatus
-              channelId={channel.id}
-              onRetry={(runId) => {
-                void sayRef.current(
-                  "Please retry the last request in this conversation.",
-                  [],
-                  runId,
-                );
-              }}
-            />
-            {channel.active ? null : (
-              <p className="pb-2 text-sm text-muted-foreground" role="status">
-                This coworker has been deleted. The conversation stays readable,
-                but it can no longer reply.
-              </p>
-            )}
-          </>
+          channel.active ? null : (
+            <p className="pb-2 text-sm text-muted-foreground" role="status">
+              This coworker has been deleted. The conversation stays readable,
+              but it can no longer reply.
+            </p>
+          )
         }
         onSubmit={async (draft) => {
-          // `draft.agentId` carries the @mentioned coworker, but nothing routes on it yet: this
-          // channel is pinned to one `runtimeAgentId` for the life of its thread, so honouring a
-          // per-message mention is a change to that binding, not to the composer.
+          // `draft.agentId` carries the @mentioned coworker. A different permitted coworker is
+          // routed below through an intentional remount so the runtime binding and visible sender
+          // always agree.
           //
           // `commandIds` are the `/` chips that survived into the send, in the order they were
           // typed. Resolved against the same list the menu was built from, so a chip left over from
           // a skill that has since been revoked resolves to nothing rather than to a stale
           // instruction — the menu is refetched, and this reads from it.
-          const skillInstructions = draft.commandIds
-            .map(
-              (id) =>
-                skillCommands.find((command) => command.id === id)?.prompt,
-            )
-            .filter((instruction): instruction is string =>
-              Boolean(instruction),
+          const skillInstructions = [
+            ...draft.commandIds
+              .map(
+                (id) =>
+                  skillCommands.find((command) => command.id === id)?.prompt,
+              )
+              .filter((instruction): instruction is string =>
+                Boolean(instruction),
+              ),
+            ...(draft.knowledgeRequested
+              ? [
+                  "Search indexed company knowledge with openbot_search_knowledge before answering. Ground factual claims in the returned evidence and cite the source titles and links. Say clearly when the available sources do not support a claim.",
+                ]
+              : []),
+          ];
+
+          if (
+            draft.agentId &&
+            draft.agentId !== runtimeAgentId &&
+            channel.agentIds.includes(draft.agentId) &&
+            onSelectAgent
+          ) {
+            stashRoutedMessage(
+              channel.id,
+              draft.agentId,
+              draft,
+              skillInstructions,
             );
+            onSelectAgent(draft.agentId);
+            return;
+          }
 
           await say(
             draft.text,
