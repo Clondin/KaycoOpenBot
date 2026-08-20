@@ -1,35 +1,20 @@
 import {
   IconArrowUp,
-  IconBook2,
-  IconCamera,
-  IconMicrophone,
-  IconMicrophoneOff,
-  IconPaperclip,
   IconPlayerStopFilled,
-  IconX,
+  IconPlus,
 } from "@tabler/icons-react";
 import { PromptArea, type PromptAreaHandle } from "prompt-area";
-import { plainTextToSegments, type Segment } from "prompt-area/helpers";
+import type { Segment } from "prompt-area/helpers";
 import {
-  type ClipboardEvent,
-  type DragEvent,
   type FormEvent,
-  type KeyboardEvent,
   useCallback,
   useEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { currentUserQueryOptions } from "@/lib/auth/queries";
 import { cn } from "@/lib/utils";
 import { Button } from "../../ui/button";
-import {
-  attachmentFromFile,
-  canAddAttachments,
-  type ComposerAttachment,
-} from "./attachments";
 import {
   applyCommandChips,
   type CommandOption,
@@ -39,11 +24,6 @@ import {
 } from "./draft";
 import { PLACEHOLDER_COMMANDS } from "./sources";
 import { type AgentOption, buildTriggers } from "./triggers";
-import {
-  clearStoredDraft,
-  readStoredDraft,
-  writeStoredDraft,
-} from "./persistence";
 
 const MAX_HEIGHT_PX = 220;
 /**
@@ -52,55 +32,12 @@ const MAX_HEIGHT_PX = 220;
 const COMPACT_MIN_HEIGHT_PX = 19;
 const COMPACT_MAX_HEIGHT_PX = 96;
 
-export type ComposerInsertion = {
-  id: string;
-  mode: "append" | "replace";
-  text: string;
-};
-
-type SpeechRecognitionResultLike = {
-  readonly 0?: { readonly transcript?: string };
-};
-
-type SpeechRecognitionLike = {
-  continuous: boolean;
-  interimResults: boolean;
-  onresult:
-    | ((event: { results: ArrayLike<SpeechRecognitionResultLike> }) => void)
-    | null;
-  onerror: (() => void) | null;
-  onend: (() => void) | null;
-  start: () => void;
-  stop: () => void;
-};
-
-function speechRecognitionConstructor():
-  | (new () => SpeechRecognitionLike)
-  | undefined {
-  const speechWindow = window as typeof window & {
-    SpeechRecognition?: new () => SpeechRecognitionLike;
-    webkitSpeechRecognition?: new () => SpeechRecognitionLike;
-  };
-  return speechWindow.SpeechRecognition ?? speechWindow.webkitSpeechRecognition;
-}
-
-function rememberSubmitted(history: string[], text: string) {
-  const trimmed = text.trim();
-  if (!trimmed || history.at(-1) === trimmed) return;
-  history.push(trimmed);
-  if (history.length > 50) history.splice(0, history.length - 50);
-}
-
 export type ComposerProps = {
   className?: string;
   compact?: boolean;
   /** Agents that `@` can address. Empty means the mention menu reports an empty channel. */
   agents?: readonly AgentOption[];
   commands?: readonly CommandOption[];
-  /** Browser-local key for restoring unsent text after a reload. Attachments are never persisted. */
-  draftKey?: string;
-  /** Loads text from a transcript action such as Quote or Edit and resend. */
-  insertion?: ComposerInsertion;
   /**
    * Receives the whole draft rather than a string, so a mention or a command reaches the caller as
    * structured data instead of something it would have to re-parse out of the text.
@@ -148,135 +85,11 @@ export type ComposerProps = {
   stoppable?: boolean;
 };
 
-function AttachmentList({
-  attachments,
-  onRemove,
-}: {
-  attachments: readonly ComposerAttachment[];
-  onRemove: (id: string) => void;
-}) {
-  if (attachments.length === 0) return null;
-  return (
-    <fieldset
-      aria-label="Attachments"
-      className="flex min-w-0 flex-wrap gap-1.5 border-0 px-3 pt-2"
-    >
-      {attachments.map((attachment) => (
-        <span
-          className="inline-flex max-w-full items-center gap-1 rounded-md bg-muted px-2 py-1 text-xs"
-          key={attachment.id}
-        >
-          <IconPaperclip className="size-3 shrink-0" />
-          <span className="max-w-48 truncate">{attachment.name}</span>
-          <button
-            aria-label={`Remove ${attachment.name}`}
-            className="rounded-sm text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            onClick={() => onRemove(attachment.id)}
-            type="button"
-          >
-            <IconX className="size-3" />
-          </button>
-        </span>
-      ))}
-    </fieldset>
-  );
-}
-
-function ComposerTools({
-  disabled,
-  isCapturing,
-  isListening,
-  knowledgeRequested,
-  onAttach,
-  onCapture,
-  onDictate,
-  onToggleKnowledge,
-}: {
-  disabled: boolean;
-  isCapturing: boolean;
-  isListening: boolean;
-  knowledgeRequested: boolean;
-  onAttach: () => void;
-  onCapture: () => void;
-  onDictate: () => void;
-  onToggleKnowledge: () => void;
-}) {
-  return (
-    <div
-      aria-label="Message tools"
-      className="flex min-w-0 items-center gap-0.5"
-      role="toolbar"
-    >
-      <Button
-        aria-label="Attach files"
-        disabled={disabled}
-        onClick={onAttach}
-        size="icon-sm"
-        title="Attach files"
-        type="button"
-        variant="ghost"
-      >
-        <IconPaperclip />
-      </Button>
-      <Button
-        aria-label={
-          isCapturing ? "Capturing screen" : "Attach a screen capture"
-        }
-        disabled={disabled || isCapturing}
-        onClick={onCapture}
-        size="icon-sm"
-        title="Attach a screen capture"
-        type="button"
-        variant="ghost"
-      >
-        <IconCamera className={isCapturing ? "animate-pulse" : undefined} />
-      </Button>
-      <Button
-        aria-label={
-          isListening ? "Stop voice dictation" : "Start voice dictation"
-        }
-        aria-pressed={isListening}
-        className={
-          isListening ? "bg-destructive/10 text-destructive" : undefined
-        }
-        disabled={disabled}
-        onClick={onDictate}
-        size="icon-sm"
-        title={isListening ? "Stop dictation" : "Dictate message"}
-        type="button"
-        variant="ghost"
-      >
-        {isListening ? <IconMicrophoneOff /> : <IconMicrophone />}
-      </Button>
-      <Button
-        aria-label="Ground this answer in company knowledge"
-        aria-pressed={knowledgeRequested}
-        className={
-          knowledgeRequested
-            ? "bg-primary/10 text-primary hover:bg-primary/15"
-            : undefined
-        }
-        disabled={disabled}
-        onClick={onToggleKnowledge}
-        size={knowledgeRequested ? "sm" : "icon-sm"}
-        title="Search company knowledge for this answer"
-        type="button"
-        variant="ghost"
-      >
-        <IconBook2 />
-        {knowledgeRequested ? "Company knowledge" : null}
-      </Button>
-    </div>
-  );
-}
-
 export function Composer({
   className,
   compact = false,
   agents = [],
   commands = PLACEHOLDER_COMMANDS,
-  draftKey,
-  insertion,
   onSubmit,
   onQueue,
   onStop,
@@ -284,29 +97,10 @@ export function Composer({
   pending = false,
   stoppable,
 }: ComposerProps) {
-  const { data: currentUser } = useQuery(currentUserQueryOptions());
-  const storageKey =
-    currentUser && draftKey ? `${currentUser.id}:${draftKey}` : undefined;
-  const [value, setValue] = useState<Segment[]>(() =>
-    readStoredDraft(storageKey),
-  );
-  const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
-  const [knowledgeRequested, setKnowledgeRequested] = useState(false);
-  const [draggingFiles, setDraggingFiles] = useState(false);
-  const [isCapturing, setIsCapturing] = useState(false);
-  const [isListening, setIsListening] = useState(false);
-  const [attachmentProblem, setAttachmentProblem] = useState<string | null>(
-    null,
-  );
+  const [value, setValue] = useState<Segment[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const submitInFlight = useRef(false);
   const promptAreaRef = useRef<PromptAreaHandle>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const speechRef = useRef<SpeechRecognitionLike | null>(null);
-  const historyRef = useRef<string[]>([]);
-  const historyIndexRef = useRef<number | null>(null);
-  const historyScratchRef = useRef("");
-  const lastInsertionRef = useRef<string | null>(null);
   /** A send has completed and the caret is owed back, as soon as the editor will take it. */
   const wantsFocus = useRef(false);
 
@@ -315,211 +109,7 @@ export function Composer({
     () => buildTriggers({ agents, commands }),
     [agents, commands],
   );
-  const draft = useMemo(
-    () => toDraft(value, attachments, knowledgeRequested),
-    [value, attachments, knowledgeRequested],
-  );
-
-  useEffect(() => {
-    if (!insertion || insertion.id === lastInsertionRef.current) return;
-    lastInsertionRef.current = insertion.id;
-    const current =
-      promptAreaRef.current?.getPlainText() ?? toDraft(value).text;
-    const next =
-      insertion.mode === "replace" || !current.trim()
-        ? insertion.text
-        : `${current.trimEnd()}\n\n${insertion.text}`;
-    setValue(plainTextToSegments(next));
-    historyIndexRef.current = null;
-    window.requestAnimationFrame(() => {
-      promptAreaRef.current?.focus();
-      promptAreaRef.current?.setCursorToEnd();
-    });
-  }, [insertion, value]);
-
-  useEffect(() => {
-    writeStoredDraft(storageKey, toDraft(value).text);
-  }, [storageKey, value]);
-
-  const removeAttachment = useCallback((id: string) => {
-    setAttachments((current) => current.filter((item) => item.id !== id));
-    setAttachmentProblem(null);
-  }, []);
-
-  const addFiles = useCallback(
-    async (files: readonly File[]) => {
-      const problem = canAddAttachments(attachments, files);
-      if (problem) {
-        setAttachmentProblem(problem);
-        return;
-      }
-      try {
-        const added = await Promise.all(files.map(attachmentFromFile));
-        setAttachments((current) => [...current, ...added]);
-        setAttachmentProblem(null);
-      } catch (error) {
-        setAttachmentProblem(
-          error instanceof Error
-            ? error.message
-            : "That file could not be attached.",
-        );
-      }
-    },
-    [attachments],
-  );
-
-  const handleRawPaste = useCallback(
-    (event: ClipboardEvent<HTMLDivElement>) => {
-      const files = Array.from(event.clipboardData.files ?? []);
-      if (files.length === 0) return;
-      event.preventDefault();
-      void addFiles(files);
-    },
-    [addFiles],
-  );
-
-  const handleDrop = useCallback(
-    (event: DragEvent<HTMLFormElement>) => {
-      event.preventDefault();
-      setDraggingFiles(false);
-      const files = Array.from(event.dataTransfer.files ?? []);
-      if (files.length > 0) void addFiles(files);
-    },
-    [addFiles],
-  );
-
-  const captureScreen = useCallback(async () => {
-    if (!navigator.mediaDevices?.getDisplayMedia) {
-      setAttachmentProblem("Screen capture is not available in this browser.");
-      return;
-    }
-    setIsCapturing(true);
-    let stream: MediaStream | null = null;
-    try {
-      stream = await navigator.mediaDevices.getDisplayMedia({
-        video: true,
-        audio: false,
-      });
-      const video = document.createElement("video");
-      video.srcObject = stream;
-      video.muted = true;
-      await video.play();
-      const canvas = document.createElement("canvas");
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-      canvas.getContext("2d")?.drawImage(video, 0, 0);
-      const blob = await new Promise<Blob | null>((resolve) =>
-        canvas.toBlob(resolve, "image/png"),
-      );
-      if (!blob) throw new Error("The screen capture could not be encoded.");
-      await addFiles([
-        new File(
-          [blob],
-          `screen-${new Date().toISOString().slice(0, 19).replaceAll(":", "-")}.png`,
-          {
-            type: "image/png",
-          },
-        ),
-      ]);
-    } catch (error) {
-      if (error instanceof DOMException && error.name === "NotAllowedError") {
-        setAttachmentProblem(null);
-      } else {
-        setAttachmentProblem(
-          error instanceof Error
-            ? error.message
-            : "The screen capture could not be attached.",
-        );
-      }
-    } finally {
-      stream?.getTracks().forEach((track) => {
-        track.stop();
-      });
-      setIsCapturing(false);
-    }
-  }, [addFiles]);
-
-  const toggleDictation = useCallback(() => {
-    if (speechRef.current) {
-      speechRef.current.stop();
-      speechRef.current = null;
-      setIsListening(false);
-      return;
-    }
-    const SpeechRecognition = speechRecognitionConstructor();
-    if (!SpeechRecognition) {
-      setAttachmentProblem("Voice dictation is not available in this browser.");
-      return;
-    }
-    const recognition = new SpeechRecognition();
-    recognition.continuous = true;
-    recognition.interimResults = false;
-    recognition.onresult = (event) => {
-      const transcript = Array.from(event.results)
-        .map((result) => result[0]?.transcript ?? "")
-        .join(" ")
-        .trim();
-      if (transcript) {
-        const prefix = promptAreaRef.current?.getPlainText().trim() ? " " : "";
-        promptAreaRef.current?.appendText(`${prefix}${transcript}`);
-      }
-    };
-    recognition.onerror = () => {
-      speechRef.current = null;
-      setIsListening(false);
-      setAttachmentProblem("Voice dictation stopped unexpectedly.");
-    };
-    recognition.onend = () => {
-      speechRef.current = null;
-      setIsListening(false);
-    };
-    speechRef.current = recognition;
-    setAttachmentProblem(null);
-    setIsListening(true);
-    try {
-      recognition.start();
-    } catch (error) {
-      speechRef.current = null;
-      setIsListening(false);
-      setAttachmentProblem(
-        error instanceof Error
-          ? error.message
-          : "Voice dictation could not start.",
-      );
-    }
-  }, []);
-
-  useEffect(
-    () => () => {
-      speechRef.current?.stop();
-    },
-    [],
-  );
-
-  const handleKeyDown = useCallback((event: KeyboardEvent<HTMLDivElement>) => {
-    if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
-    const history = historyRef.current;
-    if (history.length === 0) return;
-    const current = promptAreaRef.current?.getPlainText() ?? "";
-    if (historyIndexRef.current === null) {
-      if (event.key === "ArrowDown" || current.trim()) return;
-      historyScratchRef.current = current;
-      historyIndexRef.current = history.length - 1;
-    } else if (event.key === "ArrowUp") {
-      historyIndexRef.current = Math.max(0, historyIndexRef.current - 1);
-    } else if (historyIndexRef.current >= history.length - 1) {
-      historyIndexRef.current = null;
-    } else {
-      historyIndexRef.current += 1;
-    }
-    event.preventDefault();
-    const next =
-      historyIndexRef.current === null
-        ? historyScratchRef.current
-        : history[historyIndexRef.current];
-    setValue(plainTextToSegments(next ?? ""));
-    window.requestAnimationFrame(() => promptAreaRef.current?.setCursorToEnd());
-  }, []);
+  const draft = useMemo(() => toDraft(value), [value]);
 
   const handleChange = useCallback(
     (next: Segment[]) => {
@@ -545,7 +135,7 @@ export function Composer({
    */
   const submitDraft = useCallback(
     async (segments: Segment[]) => {
-      const submitted = toDraft(segments, attachments, knowledgeRequested);
+      const submitted = toDraft(segments);
       if (submitted.isEmpty || disabled) {
         return;
       }
@@ -567,11 +157,6 @@ export function Composer({
           return;
         }
         setValue([]);
-        setAttachments([]);
-        setKnowledgeRequested(false);
-        rememberSubmitted(historyRef.current, submitted.text);
-        historyIndexRef.current = null;
-        clearStoredDraft(storageKey);
         onQueue(submitted);
         return;
       }
@@ -584,17 +169,10 @@ export function Composer({
       setIsSubmitting(true);
       // Clear optimistically; restore if the send fails before becoming a message.
       setValue([]);
-      setAttachments([]);
-      setKnowledgeRequested(false);
-      rememberSubmitted(historyRef.current, submitted.text);
-      historyIndexRef.current = null;
-      clearStoredDraft(storageKey);
       try {
         await onSubmit(submitted);
       } catch (error) {
         setValue(segments);
-        setAttachments(submitted.attachments);
-        setKnowledgeRequested(submitted.knowledgeRequested);
         throw error;
       } finally {
         submitInFlight.current = false;
@@ -604,15 +182,7 @@ export function Composer({
         wantsFocus.current = true;
       }
     },
-    [
-      attachments,
-      disabled,
-      isBusy,
-      knowledgeRequested,
-      onQueue,
-      onSubmit,
-      storageKey,
-    ],
+    [disabled, isBusy, onQueue, onSubmit],
   );
 
   /**
@@ -681,105 +251,56 @@ export function Composer({
            * COMPACT_MAX_HEIGHT_PX: padding inside that box would scroll away with the text, so the
            * first visible line would still touch the top edge on a long message.
            */
-          "relative flex min-h-14 flex-col rounded-2xl border border-border bg-card transition-colors focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50",
-          draggingFiles && "border-primary bg-primary/5 ring-3 ring-primary/15",
+          "flex min-h-14 items-center gap-3 rounded-2xl border border-border bg-card px-3 py-3 focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50",
           className,
         )}
-        onDragEnter={(event) => {
-          if (event.dataTransfer.types.includes("Files"))
-            setDraggingFiles(true);
-        }}
-        onDragLeave={(event) => {
-          if (
-            !event.currentTarget.contains(event.relatedTarget as Node | null)
-          ) {
-            setDraggingFiles(false);
-          }
-        }}
-        onDragOver={(event) => event.preventDefault()}
-        onDrop={handleDrop}
         onSubmit={handleFormSubmit}
       >
-        <input
-          className="sr-only"
-          multiple
-          onChange={(event) => {
-            const files = Array.from(event.target.files ?? []);
-            event.target.value = "";
-            void addFiles(files);
-          }}
-          ref={fileInputRef}
-          type="file"
+        <Button
+          aria-label="More message options unavailable"
+          className="disabled:opacity-100"
+          disabled
+          size="icon"
+          type="button"
+          variant="ghost"
+        >
+          <IconPlus className="size-5" />
+        </Button>
+        <PromptArea
+          aria-label="Message"
+          className="min-w-0 flex-1 border-0 bg-transparent p-0 text-sm shadow-none"
+          disabled={disabled}
+          maxHeight={COMPACT_MAX_HEIGHT_PX}
+          minHeight={COMPACT_MIN_HEIGHT_PX}
+          onChange={handleChange}
+          onSubmit={submitDraft}
+          placeholder="Ask anything"
+          ref={promptAreaRef}
+          triggers={triggers}
+          value={value}
         />
-        <AttachmentList attachments={attachments} onRemove={removeAttachment} />
-        <div className="flex w-full items-center gap-3 px-3 py-3">
-          <PromptArea
-            aria-label="Message"
-            className="min-w-0 flex-1 border-0 bg-transparent p-0 text-sm shadow-none"
-            disabled={disabled}
-            maxHeight={COMPACT_MAX_HEIGHT_PX}
-            minHeight={COMPACT_MIN_HEIGHT_PX}
-            onChange={handleChange}
-            onKeyDown={handleKeyDown}
-            onRawPaste={handleRawPaste}
-            onSubmit={submitDraft}
-            placeholder="Ask anything"
-            ref={promptAreaRef}
-            triggers={triggers}
-            value={value}
-          />
-          {canStop ? (
-            <Button
-              aria-label="Stop the Bot"
-              className="size-8 rounded-full p-0"
-              data-testid="composer-stop"
-              onClick={onStop}
-              size="icon"
-              type="button"
-            >
-              <IconPlayerStopFilled className="size-3" />
-            </Button>
-          ) : (
-            <Button
-              aria-label={sendLabel}
-              className="size-8 rounded-full p-0"
-              disabled={!canSend}
-              size="icon"
-              type="submit"
-            >
-              <IconArrowUp className="size-3.5" />
-            </Button>
-          )}
-        </div>
-        <div className="flex min-w-0 items-center justify-between gap-2 border-t border-border/60 px-2 py-1.5">
-          <ComposerTools
-            disabled={disabled}
-            isCapturing={isCapturing}
-            isListening={isListening}
-            knowledgeRequested={knowledgeRequested}
-            onAttach={() => fileInputRef.current?.click()}
-            onCapture={() => void captureScreen()}
-            onDictate={toggleDictation}
-            onToggleKnowledge={() =>
-              setKnowledgeRequested((current) => !current)
-            }
-          />
-          <span className="hidden shrink-0 text-[11px] text-muted-foreground sm:block">
-            {parking
-              ? "Sends after current task"
-              : "Enter to send · Shift+Enter for a new line"}
-          </span>
-        </div>
-        {draggingFiles ? (
-          <div className="pointer-events-none absolute inset-1 flex items-center justify-center rounded-xl border border-dashed border-primary bg-card/95 text-sm font-medium text-primary">
-            Drop files to attach
-          </div>
-        ) : null}
-        {attachmentProblem ? (
-          <p className="px-3 pb-2 text-xs text-destructive" role="alert">
-            {attachmentProblem}
-          </p>
-        ) : null}
+        {canStop ? (
+          <Button
+            aria-label="Stop the Bot"
+            className="size-8 rounded-full p-0"
+            data-testid="composer-stop"
+            onClick={onStop}
+            size="icon"
+            type="button"
+          >
+            <IconPlayerStopFilled className="size-3" />
+          </Button>
+        ) : (
+          <Button
+            aria-label={sendLabel}
+            className="size-8 rounded-full p-0"
+            disabled={!canSend}
+            size="icon"
+            type="submit"
+          >
+            <IconArrowUp className="size-3.5" />
+          </Button>
+        )}
       </form>
     );
   }
@@ -788,38 +309,10 @@ export function Composer({
     <div className={cn("w-xl", className)}>
       <form
         aria-busy={isBusy}
-        className={cn(
-          "relative overflow-hidden rounded-2xl border border-border bg-card transition-colors",
-          draggingFiles && "border-primary bg-primary/5 ring-3 ring-primary/15",
-        )}
-        onDragEnter={(event) => {
-          if (event.dataTransfer.types.includes("Files"))
-            setDraggingFiles(true);
-        }}
-        onDragLeave={(event) => {
-          if (
-            !event.currentTarget.contains(event.relatedTarget as Node | null)
-          ) {
-            setDraggingFiles(false);
-          }
-        }}
-        onDragOver={(event) => event.preventDefault()}
-        onDrop={handleDrop}
+        className="overflow-hidden rounded-2xl border border-border bg-card"
         onSubmit={handleFormSubmit}
       >
-        <input
-          className="sr-only"
-          multiple
-          onChange={(event) => {
-            const files = Array.from(event.target.files ?? []);
-            event.target.value = "";
-            void addFiles(files);
-          }}
-          ref={fileInputRef}
-          type="file"
-        />
-
-        <AttachmentList attachments={attachments} onRemove={removeAttachment} />
+        <input className="sr-only" multiple onChange={() => {}} type="file" />
 
         <div className="grow px-3 pt-3 pb-2">
           <PromptArea
@@ -829,8 +322,6 @@ export function Composer({
             disabled={disabled}
             maxHeight={MAX_HEIGHT_PX}
             onChange={handleChange}
-            onKeyDown={handleKeyDown}
-            onRawPaste={handleRawPaste}
             onSubmit={submitDraft}
             placeholder="Ask anything"
             ref={promptAreaRef}
@@ -840,18 +331,7 @@ export function Composer({
         </div>
 
         <div className="mb-2 flex items-center justify-between px-2">
-          <ComposerTools
-            disabled={disabled}
-            isCapturing={isCapturing}
-            isListening={isListening}
-            knowledgeRequested={knowledgeRequested}
-            onAttach={() => fileInputRef.current?.click()}
-            onCapture={() => void captureScreen()}
-            onDictate={toggleDictation}
-            onToggleKnowledge={() =>
-              setKnowledgeRequested((current) => !current)
-            }
-          />
+          <div />
 
           <div>
             {canStop ? (
@@ -876,16 +356,6 @@ export function Composer({
             )}
           </div>
         </div>
-        {attachmentProblem ? (
-          <p className="px-3 pb-2 text-xs text-destructive" role="alert">
-            {attachmentProblem}
-          </p>
-        ) : null}
-        {draggingFiles ? (
-          <div className="pointer-events-none absolute inset-1 flex items-center justify-center rounded-xl border border-dashed border-primary bg-card/95 text-sm font-medium text-primary">
-            Drop files to attach
-          </div>
-        ) : null}
       </form>
     </div>
   );

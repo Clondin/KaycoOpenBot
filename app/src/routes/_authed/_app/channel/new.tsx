@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 import { useState } from "react";
 import { ChannelAvatar } from "@/components/channels/avatar";
-import type { Recipient } from "@/components/channels/compose-state";
+import { canSend, type Recipient } from "@/components/channels/compose-state";
 import { ConversationView } from "@/components/channels/conversation-view";
 import { seedMessage } from "@/components/channels/transcript-messages";
 import {
@@ -106,7 +106,6 @@ function RouteComponent() {
         </Combobox>
       </div>
       <ConversationView
-        draftKey="channel:new"
         // Commands must be loaded before the first channel message is sent.
         commands={skillCommands}
         disabled={recipients.length === 0}
@@ -120,15 +119,13 @@ function RouteComponent() {
         }
         onSubmit={async (draft) => {
           const recipient = recipients[0];
-          if (!recipient || draft.isEmpty) return;
+          if (!recipient || !canSend(recipients, draft.text)) return;
 
           setError(null);
-          setSent(
-            seedMessage(draft.text, crypto.randomUUID(), draft.attachments),
-          );
+          setSent(seedMessage(draft.text, crypto.randomUUID()));
 
           try {
-            await start(recipient.id, draft.text, draft.attachments);
+            await start(recipient.id, draft.text);
           } catch (caught) {
             // Preserve the unsent draft when channel creation fails.
             setSent(null);

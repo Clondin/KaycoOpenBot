@@ -1,6 +1,5 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import type { ComposerAttachment } from "@/components/channels/composer";
 import { stashFirstMessage } from "@/components/channels/transcript-messages";
 import { createChannelMutationOptions } from "./mutations";
 import { channelKeys } from "./queries";
@@ -18,14 +17,10 @@ export function useStartChannel() {
 
   return {
     pending: createChannel.isPending,
-    start: async (
-      agentId: string,
-      text: string,
-      attachments: readonly ComposerAttachment[] = [],
-    ) => {
+    start: async (agentId: string, text: string) => {
       const channel = await createChannel.mutateAsync([agentId]);
       queryClient.setQueryData(channelKeys.detail(channel.id), channel);
-      stashFirstMessage(channel.id, text, attachments);
+      stashFirstMessage(channel.id, text);
       await navigate({
         params: { channelId: channel.id },
         replace: true,

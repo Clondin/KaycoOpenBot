@@ -44,8 +44,6 @@ export type QueuedMessage = {
    * eventually runs rather than being silently dropped on the way through the queue.
    */
   commandIds: string[];
-  attachments: ComposerDraft["attachments"];
-  knowledgeRequested: boolean;
 };
 
 export type QueueAction =
@@ -105,8 +103,6 @@ export function reduceQueue(
               id: action.id,
               text: action.draft.text,
               commandIds: [...action.draft.commandIds],
-              attachments: [...action.draft.attachments],
-              knowledgeRequested: action.draft.knowledgeRequested,
             },
           ]),
         };
@@ -118,8 +114,6 @@ export function reduceQueue(
             id: action.id,
             text: action.draft.text,
             commandIds: [...action.draft.commandIds],
-            attachments: [...action.draft.attachments],
-            knowledgeRequested: action.draft.knowledgeRequested,
           },
         ],
         run: null,
@@ -165,8 +159,6 @@ function joinQueued(queue: readonly QueuedMessage[]): ComposerDraft {
     // The same skill queued twice is still one instruction. Sending it twice would put the same
     // paragraph in front of the Bot two times and say nothing new by doing it.
     commandIds: [...new Set(queue.flatMap((message) => message.commandIds))],
-    attachments: queue.flatMap((message) => message.attachments),
-    knowledgeRequested: queue.some((message) => message.knowledgeRequested),
     isEmpty: false,
   };
 }

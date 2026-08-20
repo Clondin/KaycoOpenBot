@@ -1,9 +1,4 @@
 import type { Message } from "@ag-ui/core";
-import {
-  attachmentInputPart,
-  type ComposerAttachment,
-  type ComposerDraft,
-} from "@/components/channels/composer";
 
 /**
  * What a transcript shows while a brand-new channel is still joining.
@@ -22,22 +17,8 @@ export function transcriptMessages(
 }
 
 /** The person's message, in the shape the transcript and the agent both take. */
-export function seedMessage(
-  text: string,
-  id: string,
-  attachments: readonly ComposerAttachment[] = [],
-): Message {
-  return {
-    id,
-    role: "user",
-    content:
-      attachments.length === 0
-        ? text
-        : [
-            ...(text ? [{ type: "text" as const, text }] : []),
-            ...attachments.map(attachmentInputPart),
-          ],
-  };
+export function seedMessage(text: string, id: string): Message {
+  return { id, role: "user", content: text };
 }
 
 /**
@@ -51,75 +32,15 @@ export function seedMessage(
  * Deliberately not persisted. A reload finds nothing here, which is correct, by then the message
  * is in the thread and arrives through the normal replay.
  */
-export type FirstMessage = {
-  text: string;
-  attachments: ComposerAttachment[];
-};
+const firstMessages = new Map<string, string>();
 
-const firstMessages = new Map<string, FirstMessage>();
-const assignedWork = new Map<string, { text: string; runId: string }>();
-const routedMessages = new Map<
-  string,
-  { draft: ComposerDraft; skillInstructions: string[] }
->();
-
-export function stashFirstMessage(
-  channelId: string,
-  text: string,
-  attachments: readonly ComposerAttachment[] = [],
-): void {
-  firstMessages.set(channelId, { text, attachments: [...attachments] });
+export function stashFirstMessage(channelId: string, text: string): void {
+  firstMessages.set(channelId, text);
 }
 
 /** Read the pending first message and forget it. Null for a channel opened any other way. */
-export function takeFirstMessage(channelId: string): FirstMessage | null {
-  const message = firstMessages.get(channelId) ?? null;
+export function takeFirstMessage(channelId: string): string | null {
+  const text = firstMessages.get(channelId) ?? null;
   firstMessages.delete(channelId);
-  return message;
-}
-
-/** Queue-owned work opened from the Work page, carrying the durable run it must continue. */
-export function stashAssignedWork(
-  channelId: string,
-  text: string,
-  runId: string,
-): void {
-  assignedWork.set(channelId, { text, runId });
-}
-
-export function takeAssignedWork(
-  channelId: string,
-): { text: string; runId: string } | null {
-  const work = assignedWork.get(channelId) ?? null;
-  assignedWork.delete(channelId);
-  return work;
-}
-
-function routedMessageKey(channelId: string, agentId: string) {
-  return `${channelId}:${agentId}`;
-}
-
-/** Carry a message across the intentional remount used when an @mention switches coworkers. */
-export function stashRoutedMessage(
-  channelId: string,
-  agentId: string,
-  draft: ComposerDraft,
-  skillInstructions: readonly string[],
-): void {
-  routedMessages.set(routedMessageKey(channelId, agentId), {
-    draft: {
-      ...draft,
-      attachments: [...draft.attachments],
-      commandIds: [...draft.commandIds],
-    },
-    skillInstructions: [...skillInstructions],
-  });
-}
-
-/** Destructive take prevents React remounts from sending the routed message twice. */
-export function takeRoutedMessage(channelId: string, agentId: string) {
-  const key = routedMessageKey(channelId, agentId);
-  const message = routedMessages.get(key) ?? null;
-  routedMessages.delete(key);
-  return message;
+  return text;
 }

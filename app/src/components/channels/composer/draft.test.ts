@@ -45,22 +45,6 @@ describe("toDraft", () => {
     expect(toDraft([text("   ")]).isEmpty).toBe(true);
     expect(toDraft([]).isEmpty).toBe(true);
   });
-
-  test("allows an attachment-only message", () => {
-    const attachment = {
-      id: "file-1",
-      name: "notes.txt",
-      mimeType: "text/plain",
-      bytes: 12,
-      kind: "document" as const,
-      data: "aGVsbG8=",
-    };
-
-    const draft = toDraft([], [attachment]);
-
-    expect(draft.isEmpty).toBe(false);
-    expect(draft.attachments).toEqual([attachment]);
-  });
 });
 
 describe("enforceSingleAgent", () => {
