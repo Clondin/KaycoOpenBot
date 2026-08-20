@@ -114,7 +114,7 @@ function WorkPage() {
 
         <nav
           aria-label="Work sections"
-          className="mt-8 flex gap-1 overflow-x-auto rounded-xl border border-border bg-muted/40 p-1"
+          className="mt-8 grid grid-cols-3 gap-1 rounded-xl border border-border bg-muted/40 p-1 sm:flex sm:overflow-x-auto"
         >
           {(
             [
@@ -126,7 +126,7 @@ function WorkPage() {
             ] as const
           ).map(([view, label, Icon]) => (
             <Button
-              className="shrink-0"
+              className="min-w-0 px-2 sm:shrink-0 sm:px-3"
               key={view}
               onClick={() => navigate({ search: { view } })}
               size="sm"

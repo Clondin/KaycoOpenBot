@@ -25,7 +25,7 @@ export function createCodexRoutes(
       const snapshot = await manager.account(context.var.actor.id);
       return context.json({
         connected: snapshot.account?.type === "chatgpt",
-        account: snapshot.account,
+        account: publicAccount(snapshot.account),
         requiresOpenaiAuth: snapshot.requiresOpenaiAuth,
       });
     } catch (error) {
@@ -100,6 +100,20 @@ export function createCodexRoutes(
   });
 
   return routes;
+}
+
+function publicAccount(
+  account: Awaited<ReturnType<CodexAccountService["account"]>>["account"],
+) {
+  if (!account) return null;
+  if (account.type === "chatgpt") {
+    return {
+      type: account.type,
+      email: account.email,
+      ...(account.planType ? { planType: account.planType } : {}),
+    };
+  }
+  return { type: account.type };
 }
 
 async function requireConnected(manager: CodexAccountService, userId: string) {

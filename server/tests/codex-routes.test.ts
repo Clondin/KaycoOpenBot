@@ -48,6 +48,7 @@ describe("Codex account routes", () => {
             type: "chatgpt",
             email: "person@example.com",
             planType: "plus",
+            accessToken: "must-not-reach-the-browser",
           },
           requiresOpenaiAuth: true,
         }),
