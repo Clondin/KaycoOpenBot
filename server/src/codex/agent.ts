@@ -175,7 +175,7 @@ export class CodexAgent extends AbstractAgent {
     return {
       ...(model ? { model } : {}),
       approvalPolicy: "never",
-      sandbox: "readOnly",
+      sandbox: "read-only",
       developerInstructions: [
         this.options.systemPrompt,
         "You are running as a coworker inside OpenBot. Use only the tools OpenBot provides. Native shell, file mutation, web search, and external apps are unavailable. When you call an OpenBot tool, stop and wait for its result before continuing.",

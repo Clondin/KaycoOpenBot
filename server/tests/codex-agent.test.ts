@@ -85,7 +85,7 @@ describe("Codex AG-UI adapter", () => {
     expect(start?.params).toMatchObject({
       model: "gpt-5.6",
       approvalPolicy: "never",
-      sandbox: "readOnly",
+      sandbox: "read-only",
       config: {
         web_search: "disabled",
         features: { shell_tool: false, apply_patch_freeform: false },
