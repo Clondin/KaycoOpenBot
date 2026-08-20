@@ -155,6 +155,25 @@ export function toVisibleChatItems(
   });
 }
 
+/**
+ * Whether the transcript needs its own progress line at the end.
+ *
+ * A pending tool call already shimmers, and streamed assistant text is visible progress in its own
+ * right. The gaps that need an explicit status are before the first output and after a tool result,
+ * while the Bot is deciding what to do next.
+ */
+export function shouldShowThinking(
+  busy: boolean,
+  items: readonly VisibleChatItem[],
+): boolean {
+  if (!busy) return false;
+
+  const lastItem = items.at(-1);
+  if (!lastItem) return true;
+  if (lastItem.kind === "tool") return "result" in lastItem;
+  return lastItem.role === "user";
+}
+
 export function searchableMessageIds(
   messages: ReadonlyArray<Readonly<Message>>,
   query: string,
