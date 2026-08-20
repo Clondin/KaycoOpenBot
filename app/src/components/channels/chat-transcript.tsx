@@ -1,5 +1,8 @@
 import type { Message } from "@ag-ui/core";
-import { useRenderToolCall } from "@copilotkit/react-core/v2";
+import {
+  CopilotChatReasoningMessage,
+  useRenderToolCall,
+} from "@copilotkit/react-core/v2";
 import { IconBox } from "@tabler/icons-react";
 import { motion, useReducedMotion } from "motion/react";
 import { memo, useEffect, useMemo, useRef } from "react";
@@ -418,6 +421,41 @@ const TranscriptMessage = memo(function TranscriptMessage({
 });
 
 /**
+ * The readable summary Codex exposes while it works.
+ *
+ * This deliberately uses CopilotKit's own reasoning disclosure instead of inventing a second chat
+ * language for channels. It opens while the latest thought is streaming, collapses when the answer
+ * begins, and remains available as a "Thought for …" row afterward — the same behaviour as the
+ * original packaged OpenBot chat on `/bot`.
+ */
+const TranscriptReasoning = memo(function TranscriptReasoning({
+  delay,
+  id,
+  streaming,
+  text,
+}: {
+  delay: number;
+  id: string;
+  streaming: boolean;
+  text: string;
+}) {
+  const message = useMemo(
+    () => ({ id, role: "reasoning" as const, content: text }),
+    [id, text],
+  );
+
+  return (
+    <Arriving delay={delay}>
+      <CopilotChatReasoningMessage
+        isRunning={streaming}
+        message={message}
+        messages={[message]}
+      />
+    </Arriving>
+  );
+});
+
+/**
  * One drawn tool call, memoised on the same terms.
  *
  * The `toolCall` object is rebuilt here from its parts rather than passed down, because the one on
@@ -549,7 +587,16 @@ export function ChatTranscript({
              * chart SVGs — and that is what is skipped.
              */}
             {items.map((item, index) =>
-              item.kind === "tool" ? (
+              item.kind === "reasoning" ? (
+                <MessageScrollerItem key={item.id} messageId={item.id}>
+                  <TranscriptReasoning
+                    delay={delays.delayFor(item.id, index, items.length)}
+                    id={item.id}
+                    streaming={busy && index === items.length - 1}
+                    text={item.text}
+                  />
+                </MessageScrollerItem>
+              ) : item.kind === "tool" ? (
                 <MessageScrollerItem key={item.id} messageId={item.id}>
                   <TranscriptToolCall
                     args={item.toolCall.function.arguments}

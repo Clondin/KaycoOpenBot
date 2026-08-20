@@ -206,6 +206,10 @@ export class CodexAgent extends AbstractAgent {
     let turnId: string | undefined;
     let messageId: string | undefined;
     let textOpen = false;
+    let reasoningMessageId: string | undefined;
+    let reasoningOpen = false;
+    let reasoningHasContent = false;
+    let reasoningSegment: string | undefined;
     let delegatedTool = false;
     let resolveCompleted!: () => void;
     let rejectCompleted!: (error: Error) => void;
@@ -218,6 +222,65 @@ export class CodexAgent extends AbstractAgent {
       if (!textOpen || !messageId || subscriber.closed) return;
       subscriber.next({ type: "TEXT_MESSAGE_END", messageId } as BaseEvent);
       textOpen = false;
+    };
+
+    const closeReasoning = () => {
+      if (!reasoningOpen || !reasoningMessageId || subscriber.closed) return;
+      subscriber.next({
+        type: "REASONING_MESSAGE_END",
+        messageId: reasoningMessageId,
+      } as BaseEvent);
+      subscriber.next({
+        type: "REASONING_END",
+        messageId: reasoningMessageId,
+      } as BaseEvent);
+      reasoningOpen = false;
+      reasoningMessageId = undefined;
+      reasoningHasContent = false;
+      reasoningSegment = undefined;
+    };
+
+    const appendReasoning = (
+      itemId: string,
+      segment: string,
+      delta: string,
+    ) => {
+      const nextMessageId = `codex-reasoning-${itemId}`;
+      if (reasoningOpen && reasoningMessageId !== nextMessageId) {
+        closeReasoning();
+      }
+      if (!reasoningOpen) {
+        closeText();
+        reasoningMessageId = nextMessageId;
+        subscriber.next({
+          type: "REASONING_START",
+          messageId: nextMessageId,
+        } as BaseEvent);
+        subscriber.next({
+          type: "REASONING_MESSAGE_START",
+          messageId: nextMessageId,
+          role: "reasoning",
+        } as BaseEvent);
+        reasoningOpen = true;
+      }
+      if (
+        reasoningHasContent &&
+        reasoningSegment !== undefined &&
+        reasoningSegment !== segment
+      ) {
+        subscriber.next({
+          type: "REASONING_MESSAGE_CONTENT",
+          messageId: nextMessageId,
+          delta: "\n\n",
+        } as BaseEvent);
+      }
+      subscriber.next({
+        type: "REASONING_MESSAGE_CONTENT",
+        messageId: nextMessageId,
+        delta,
+      } as BaseEvent);
+      reasoningHasContent = true;
+      reasoningSegment = segment;
     };
 
     const unsubscribeNotification = client.onNotification(
@@ -242,9 +305,42 @@ export class CodexAgent extends AbstractAgent {
         const eventTurnId = turnIdFrom(event);
         if (turnId && eventTurnId && eventTurnId !== turnId) return;
 
+        if (
+          method === "item/reasoning/summaryTextDelta" ||
+          method === "item/reasoning/textDelta"
+        ) {
+          const delta = typeof event.delta === "string" ? event.delta : "";
+          if (!delta || subscriber.closed) return;
+          const itemId =
+            typeof event.itemId === "string" ? event.itemId : input.runId;
+          const index =
+            method === "item/reasoning/summaryTextDelta"
+              ? event.summaryIndex
+              : event.contentIndex;
+          appendReasoning(
+            itemId,
+            `${method}:${typeof index === "number" ? index : 0}`,
+            delta,
+          );
+          return;
+        }
+
+        if (method === "item/completed") {
+          const item = asRecord(event.item);
+          if (
+            item.type === "reasoning" &&
+            (typeof item.id !== "string" ||
+              reasoningMessageId === `codex-reasoning-${item.id}`)
+          ) {
+            closeReasoning();
+          }
+          return;
+        }
+
         if (method === "item/agentMessage/delta" && !delegatedTool) {
           const delta = typeof event.delta === "string" ? event.delta : "";
           if (!delta || subscriber.closed) return;
+          closeReasoning();
           const nextMessageId =
             typeof event.itemId === "string"
               ? event.itemId
@@ -268,6 +364,7 @@ export class CodexAgent extends AbstractAgent {
         }
 
         if (method === "turn/completed") {
+          closeReasoning();
           closeText();
           const turn = asRecord(event.turn);
           if (turn.status === "failed") {
@@ -306,6 +403,7 @@ export class CodexAgent extends AbstractAgent {
 
       const deploymentTool = tools.find((tool) => tool.name === call.tool);
       delegatedTool = !deploymentTool;
+      closeReasoning();
       closeText();
       if (!subscriber.closed) {
         const parentMessageId = messageId ?? `codex-message-${input.runId}`;
@@ -385,6 +483,7 @@ export class CodexAgent extends AbstractAgent {
     } finally {
       unsubscribeNotification();
       unsubscribeTool();
+      closeReasoning();
       closeText();
     }
   }
@@ -424,7 +523,10 @@ function latestMessageId(input: RunAgentInput) {
 
 function turnText(input: RunAgentInput, includeHistory: boolean) {
   const messages = input.messages.filter(
-    (message) => message.role !== "system" && message.role !== "developer",
+    (message) =>
+      message.role !== "system" &&
+      message.role !== "developer" &&
+      message.role !== "reasoning",
   );
   const selected = includeHistory ? messages : messages.slice(-1);
   if (selected.length === 0) return "Continue the OpenBot conversation.";

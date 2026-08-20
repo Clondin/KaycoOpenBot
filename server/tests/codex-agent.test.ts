@@ -43,6 +43,11 @@ describe("Codex AG-UI adapter", () => {
         state: {},
         messages: [
           {
+            id: "reasoning-old",
+            role: "reasoning",
+            content: "Do not resend this visible summary as a user message.",
+          },
+          {
             id: "user-1",
             role: "user",
             content: [
@@ -106,9 +111,64 @@ describe("Codex AG-UI adapter", () => {
       "Attached text file notes.txt",
     );
     expect(JSON.stringify(turn?.params)).toContain("Notes from the file.");
+    expect(JSON.stringify(turn?.params)).not.toContain(
+      "Do not resend this visible summary",
+    );
     expect(
       client.requests.some((request) => request.method === "turn/interrupt"),
     ).toBe(false);
+  });
+
+  test("streams Codex reasoning summaries as first-class AG-UI reasoning", async () => {
+    const client = new FakeCodexClient("reasoning");
+    const agent = new CodexAgent({
+      userId: "user-7",
+      agentId: "assistant",
+      name: "Assistant",
+      systemPrompt: "Be useful.",
+      manager: manager(client),
+      threadStore: {
+        get: async () => null,
+        set: async () => undefined,
+      },
+      config: {
+        executable: "codex",
+        homeRoot: "/private/codex",
+        idleMs: 10_000,
+      },
+    });
+
+    agent.setMessages([{ id: "user-1", role: "user", content: "Think first" }]);
+    const events: BaseEvent[] = [];
+    await agent.runAgent(
+      { runId: "run-reasoning" },
+      { onEvent: ({ event }) => events.push(event) },
+    );
+
+    expect(events.map((event) => event.type)).toEqual([
+      "RUN_STARTED",
+      "REASONING_START",
+      "REASONING_MESSAGE_START",
+      "REASONING_MESSAGE_CONTENT",
+      "REASONING_MESSAGE_CONTENT",
+      "REASONING_MESSAGE_CONTENT",
+      "REASONING_MESSAGE_END",
+      "REASONING_END",
+      "TEXT_MESSAGE_START",
+      "TEXT_MESSAGE_CONTENT",
+      "TEXT_MESSAGE_END",
+      "RUN_FINISHED",
+    ]);
+    expect(events.slice(3, 6)).toMatchObject([
+      { delta: "Checking the request." },
+      { delta: "\n\n" },
+      { delta: "Choosing a response." },
+    ]);
+    expect(agent.messages).toContainEqual({
+      id: "codex-reasoning-reasoning-1",
+      role: "reasoning",
+      content: "Checking the request.\n\nChoosing a response.",
+    });
   });
 
   test("delegates Codex dynamic tools to the existing browser tool loop", async () => {
@@ -330,7 +390,8 @@ class FakeCodexClient implements CodexAgentClient {
       | false
       | "surface"
       | "server"
-      | "message-switch" = false,
+      | "message-switch"
+      | "reasoning" = false,
   ) {}
 
   async request<T>(method: string, params?: unknown): Promise<T> {
@@ -340,6 +401,38 @@ class FakeCodexClient implements CodexAgentClient {
     }
     if (method === "turn/start") {
       queueMicrotask(async () => {
+        if (this.callTool === "reasoning") {
+          this.emit("item/reasoning/summaryTextDelta", {
+            threadId: "codex-thread",
+            turnId: "turn-1",
+            itemId: "reasoning-1",
+            summaryIndex: 0,
+            delta: "Checking the request.",
+          });
+          this.emit("item/reasoning/summaryTextDelta", {
+            threadId: "codex-thread",
+            turnId: "turn-1",
+            itemId: "reasoning-1",
+            summaryIndex: 1,
+            delta: "Choosing a response.",
+          });
+          this.emit("item/completed", {
+            threadId: "codex-thread",
+            turnId: "turn-1",
+            item: { id: "reasoning-1", type: "reasoning" },
+          });
+          this.emit("item/agentMessage/delta", {
+            threadId: "codex-thread",
+            turnId: "turn-1",
+            itemId: "message-1",
+            delta: "Done.",
+          });
+          this.emit("turn/completed", {
+            threadId: "codex-thread",
+            turn: { id: "turn-1", status: "completed" },
+          });
+          return;
+        }
         if (this.callTool === "message-switch") {
           this.emit("item/agentMessage/delta", {
             threadId: "codex-thread",
