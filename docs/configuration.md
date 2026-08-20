@@ -37,12 +37,50 @@ All four Intelligence values are required together. Missing any of them stops se
 | `TENANT_PACKAGE_DIR` | `../examples/fintech`              | Tenant package directory, resolved from `server/`.                  |
 | `DEPLOYMENT_ID`      | the tenant package's id            | Names this deployment inside a shared Intelligence project.          |
 | `OPENAI_API_KEY`     | unset                              | Default model key for built-in agents and both shipped Bots.        |
+| `OPENAI_BASE_URL`    | unset                              | OpenAI-compatible endpoint that key is spent against. See below.    |
 | `BOT_PROVIDER`       | `openai`                           | Provider for `agent-langgraph`: `openai`, `anthropic`, `google`, or `xai`. |
 | `ANTHROPIC_API_KEY`  | unset                              | Anthropic key when `BOT_PROVIDER=anthropic`.                        |
+| `ANTHROPIC_BASE_URL` | unset                              | Anthropic-compatible endpoint that key is spent against.            |
 | `GOOGLE_API_KEY`     | unset                              | Google key when `BOT_PROVIDER=google`.                              |
+| `GOOGLE_GENERATIVE_AI_BASE_URL` | unset                   | Google-compatible endpoint that key is spent against.               |
 | `XAI_API_KEY`        | unset                              | xAI key when `BOT_PROVIDER=xai`; Grok 4.6 is supported.             |
 | `BOT_MODEL`          | provider default from Bot code/env | Model used by the shipped Bots.                                     |
 | `BOT_RESPONSES_API`  | `false`                            | Makes `agent-langgraph` use the OpenAI Responses API.               |
+
+## OpenAI-compatible endpoints
+
+`OPENAI_BASE_URL` decides where an OpenAI-shaped request is answered. Unset, that is OpenAI. Set, it
+is any endpoint speaking the same API: a gateway in front of several providers, a proxy, or a model
+on hardware you control.
+
+It moves the whole deployment rather than one Bot. The API server reads it for package built-in
+agents, `agent-bot` reads it for the client it constructs, and `agent-langgraph` reads it for
+`BOT_PROVIDER=openai`.
+
+The other two providers work the same way under their own names because they are different APIs:
+`ANTHROPIC_BASE_URL` and `GOOGLE_GENERATIVE_AI_BASE_URL`. Model names travel verbatim, so use what the
+endpoint publishes in `BOT_MODEL` and the tenant package's `default_model`.
+
+A gateway that fronts several providers behind one key is addressed in the usual way:
+
+```sh
+OPENAI_BASE_URL=https://gateway.internal/v1
+OPENAI_API_KEY=...
+BOT_MODEL=openai/gpt-4o
+```
+
+and in the tenant package:
+
+```yaml
+model:
+  provider: openai
+  credential_secret_ref: openai-api-key
+  default_model: openai/gpt-4o
+```
+
+Check the gateway's model catalogue before configuring it. Not every model accepts tools, and
+`BOT_RESPONSES_API=true` requires an endpoint that implements the Responses API rather than only chat
+completions.
 
 ## ChatGPT and Codex accounts
 
@@ -248,7 +286,7 @@ model:
   default_model: gpt-4.1
 ```
 
-`provider` must be `openai`. `credential_secret_ref` is a reference to a stored credential, not a credential value.
+`provider` must be `openai`. `credential_secret_ref` is a reference to a stored credential, not a credential value. `default_model` is passed through as written, so an OpenAI-compatible endpoint reached through `OPENAI_BASE_URL` takes the name that endpoint publishes.
 
 ### `knowledge.yaml`
 
