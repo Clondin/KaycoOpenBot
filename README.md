@@ -1,17 +1,22 @@
 <div align="center">
 
-# OpenBot
+# Kayco OpenBot
 
 **AI coworkers you can hand real work to, and actually trust with the access.** Each gets a computer of its own: a real browser with its own logins, its own files, and only the tools you grant. Every action decided before it happens and recorded after.
 
-[**copilotkit.ai/openbot**](https://copilotkit.ai/openbot) · [**Quick start**](#quick-start) · [**Features**](#features) · [**Bring your own agent**](#bring-your-own-agent) · [**Architecture**](#architecture) · [**Docs**](docs/README.md)
+[**Fork policy**](docs/fork.md) · [**Quick start**](#quick-start) · [**Features**](#features) · [**Bring your own agent**](#bring-your-own-agent) · [**Architecture**](#architecture) · [**Docs**](docs/README.md)
 
-[![CI](https://github.com/CopilotKit/openbot/actions/workflows/ci.yml/badge.svg)](https://github.com/CopilotKit/openbot/actions/workflows/ci.yml)
-[![security](https://github.com/CopilotKit/openbot/actions/workflows/security_zizmor.yml/badge.svg)](https://github.com/CopilotKit/openbot/actions/workflows/security_zizmor.yml)
+[![CI](https://github.com/Clondin/KaycoOpenBot/actions/workflows/ci.yml/badge.svg)](https://github.com/Clondin/KaycoOpenBot/actions/workflows/ci.yml)
+[![security](https://github.com/Clondin/KaycoOpenBot/actions/workflows/security_zizmor.yml/badge.svg)](https://github.com/Clondin/KaycoOpenBot/actions/workflows/security_zizmor.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 ![Alpha](https://img.shields.io/badge/status-alpha-orange.svg)
 
 </div>
+
+> **Kayco product fork.** This repository is maintained independently from
+> [CopilotKit OpenBot](https://github.com/CopilotKit/openbot). Product changes
+> belong here; upstream improvements arrive through reviewed synchronization
+> merges. See the [fork ownership and synchronization policy](docs/fork.md).
 
 https://github.com/user-attachments/assets/535ef7ee-1631-4a69-b839-564c56cf90b4
 
@@ -259,6 +264,7 @@ Use `bash scripts/start.sh` for the whole stack. Use `bun run dev` only when you
 - [docs/configuration.md](docs/configuration.md)
 - [docs/development.md](docs/development.md)
 - [docs/coworkers.md](docs/coworkers.md)
+- [docs/fork.md](docs/fork.md)
 
 ## Contributing
 
@@ -269,4 +275,4 @@ Use `bash scripts/start.sh` for the whole stack. Use `bun run dev` only when you
 
 ## License
 
-[MIT](./LICENSE) © CopilotKit
+[MIT](./LICENSE) — upstream copyright remains with CopilotKit; this product fork is maintained by Kayco.

@@ -1,0 +1,92 @@
+name: Upstream status
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 13 * * 1"
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: upstream-status
+  cancel-in-progress: true
+
+jobs:
+  compare:
+    name: Compare CopilotKit OpenBot
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out the complete product history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Fetch upstream main
+        run: >-
+          git fetch --no-tags --force
+          https://github.com/CopilotKit/openbot.git
+          main:refs/remotes/upstream/main
+
+      - name: Open, update, or close the upstream status issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          ISSUE_TITLE: Upstream OpenBot updates available
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          behind="$(git rev-list --count HEAD..refs/remotes/upstream/main)"
+          existing="$(
+            gh issue list \
+              --repo "$GH_REPO" \
+              --state open \
+              --limit 100 \
+              --json number,title \
+              --jq ".[] | select(.title == \"$ISSUE_TITLE\") | .number" \
+              | head -n 1
+          )"
+
+          if [[ "$behind" == "0" ]]; then
+            if [[ -n "$existing" ]]; then
+              gh issue close "$existing" \
+                --repo "$GH_REPO" \
+                --comment "The current product branch now contains all commits from upstream main."
+            fi
+            exit 0
+          fi
+
+          issue_body="$RUNNER_TEMP/upstream-status.md"
+          {
+            echo "CopilotKit OpenBot has **$behind commit(s)** not yet contained in this repository's default branch."
+            echo
+            echo "### New upstream commits"
+            echo
+            echo '```text'
+            git log \
+              --format='%h %cs %s' \
+              --date=short \
+              --max-count=50 \
+              HEAD..refs/remotes/upstream/main
+            echo '```'
+            echo
+            echo "Follow [AGENTS.md](../blob/main/AGENTS.md) and [docs/fork.md](../blob/main/docs/fork.md)."
+            echo "Create a dedicated \`sync/upstream-YYYY-MM-DD\` branch and retain the upstream merge commit."
+            echo
+            echo "_This issue is maintained automatically by the Upstream status workflow._"
+          } > "$issue_body"
+
+          if [[ -n "$existing" ]]; then
+            gh issue edit "$existing" \
+              --repo "$GH_REPO" \
+              --body-file "$issue_body"
+          else
+            gh issue create \
+              --repo "$GH_REPO" \
+              --title "$ISSUE_TITLE" \
+              --body-file "$issue_body"
+          fi
