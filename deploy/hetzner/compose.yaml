@@ -55,6 +55,28 @@ services:
       postgres:
         condition: service_healthy
 
+  connector-worker:
+    image: openbot-worker:${OPENBOT_IMAGE_TAG:-local}
+    build:
+      context: ../..
+      dockerfile: worker/Dockerfile
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://openbot:${POSTGRES_PASSWORD}@postgres:5432/openbot
+      KEY_ENCRYPTION_KEY: ${KEY_ENCRYPTION_KEY:?Set KEY_ENCRYPTION_KEY in env.production}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
+      EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-https://api.openai.com/v1}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-small}
+      CONNECTOR_POLL_MS: ${CONNECTOR_POLL_MS:-10000}
+      CONNECTOR_SYNC_INTERVAL_MS: ${CONNECTOR_SYNC_INTERVAL_MS:-300000}
+      CONNECTOR_RETRY_MS: ${CONNECTOR_RETRY_MS:-60000}
+    networks:
+      - backend
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
   server:
     image: openbot-server:${OPENBOT_IMAGE_TAG:-local}
     build:
