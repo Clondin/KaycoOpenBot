@@ -1,6 +1,10 @@
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
-import { useComputerActivity } from "@/lib/copilot/computer-activity";
+import {
+  type ComputerTask,
+  requestComputerRetry,
+  useComputerTask,
+} from "@/lib/copilot/computer-activity";
 import { LiveScreen } from "./live-screen";
 import { ComputerPlaceholder } from "./placeholder";
 import {
@@ -19,6 +23,85 @@ type Props = {
   minWidth?: number;
   minHeight?: number;
 };
+
+function duration(ms: number): string {
+  return ms < 10_000
+    ? `${(ms / 1000).toFixed(1)}s`
+    : `${Math.round(ms / 1000)}s`;
+}
+
+function TaskProgress({ task }: { task: ComputerTask }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (task.status !== "active") return;
+    setNow(Date.now());
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [task.status]);
+
+  const completed = task.steps.filter(
+    (step) => step.stage === "complete",
+  ).length;
+  const failed = task.steps.filter((step) => step.stage === "error").length;
+  const current = task.steps.at(-1);
+  const elapsed = Math.max(0, (task.finishedAt ?? now) - task.startedAt);
+
+  return (
+    <figcaption className="border-b bg-muted/30 px-3 py-2 text-xs">
+      <div className="flex items-start gap-2">
+        <span
+          aria-hidden
+          className={`mt-1 size-2 shrink-0 rounded-full ${
+            task.status === "error"
+              ? "bg-destructive"
+              : task.status === "complete"
+                ? "bg-emerald-500"
+                : "animate-pulse bg-sky-500"
+          }`}
+        />
+        <div className="min-w-0 flex-1">
+          {task.goal ? (
+            <p className="truncate font-medium" title={task.goal}>
+              {task.goal}
+            </p>
+          ) : null}
+          <p
+            className="truncate text-muted-foreground"
+            role="status"
+            aria-live="polite"
+          >
+            {current?.label ?? "Preparing to use the computer"}
+          </p>
+          {task.steps.length > 1 ? (
+            <ol className="mt-1 space-y-0.5 border-l pl-2 text-muted-foreground">
+              {task.steps.slice(-4).map((step) => (
+                <li className="flex min-w-0 gap-1.5" key={step.id}>
+                  <span aria-hidden>
+                    {step.stage === "error"
+                      ? "×"
+                      : step.stage === "complete"
+                        ? "✓"
+                        : "•"}
+                  </span>
+                  <span className="min-w-0 flex-1 truncate">{step.label}</span>
+                  {step.elapsedMs !== undefined ? (
+                    <span className="shrink-0 tabular-nums">
+                      {duration(step.elapsedMs)}
+                    </span>
+                  ) : null}
+                </li>
+              ))}
+            </ol>
+          ) : null}
+        </div>
+        <span className="shrink-0 tabular-nums text-muted-foreground">
+          {completed} done{failed ? ` · ${failed} failed` : ""} ·{" "}
+          {duration(elapsed)}
+        </span>
+      </div>
+    </figcaption>
+  );
+}
 
 export function ComputerView({
   computerId,
@@ -42,10 +125,41 @@ export function ComputerView({
   const [controlProblem, setControlProblem] = useState<string | null>(null);
   const [uploadingFile, setUploadingFile] = useState(false);
   const [fileProblem, setFileProblem] = useState<string | null>(null);
-  const activity = useComputerActivity(computerId);
+  const task = useComputerTask(computerId);
+  const [recoveringBot, setRecoveringBot] = useState<string | null>(null);
+  const [recoveryProblem, setRecoveryProblem] = useState<string | null>(null);
   const driving = control?.holder === "human";
   const blankBrowser = page?.url === "about:blank" || page?.url === "";
   const showScreen = hasFrame && !blankBrowser;
+  const lastStep = task?.steps.at(-1);
+  const capacity =
+    lastStep?.code === "computer_capacity" ? lastStep : undefined;
+
+  const stopAndRetry = async (activeBotId: string) => {
+    if (recoveringBot) return;
+    setRecoveringBot(activeBotId);
+    setRecoveryProblem(null);
+    try {
+      const stopped = await fetch(
+        `/api/computers/${encodeURIComponent(activeBotId)}/computers/stop`,
+        { method: "POST", credentials: "include" },
+      );
+      if (!stopped.ok)
+        throw new Error("The active computer could not be stopped.");
+      const warmed = await fetch(
+        `/api/computers/${encodeURIComponent(computerId)}/warm`,
+        { method: "POST", credentials: "include" },
+      );
+      if (!warmed.ok) throw new Error("This computer could not be started.");
+      requestComputerRetry(computerId);
+    } catch (error) {
+      setRecoveryProblem(
+        error instanceof Error ? error.message : "Computer recovery failed.",
+      );
+    } finally {
+      setRecoveringBot(null);
+    }
+  };
 
   useEffect(() => {
     const controller = new AbortController();
@@ -119,6 +233,7 @@ export function ComputerView({
     <LiveScreen
       computerId={computerId}
       driving={driving}
+      mode={expanded ? "full" : "compact"}
       onControl={setControl}
       onFrame={() => setHasFrame(true)}
       onPage={setPage}
@@ -129,27 +244,38 @@ export function ComputerView({
   return (
     <>
       <figure className="overflow-hidden rounded-2xl border">
-        {activity ? (
-          <figcaption
-            className="flex items-center gap-2 border-b bg-muted/30 px-3 py-2 text-xs"
-            aria-live="polite"
+        {task ? <TaskProgress task={task} /> : null}
+
+        {capacity?.activeComputers?.length ? (
+          <div
+            className="border-b bg-destructive/5 px-3 py-2 text-xs"
+            role="alert"
           >
-            <span
-              className={`size-2 shrink-0 rounded-full ${
-                activity.stage === "error"
-                  ? "bg-destructive"
-                  : activity.stage === "complete"
-                    ? "bg-emerald-500"
-                    : "animate-pulse bg-sky-500"
-              }`}
-            />
-            <span className="min-w-0 flex-1 truncate">{activity.label}</span>
-            {activity.elapsedMs !== undefined ? (
-              <span className="shrink-0 text-muted-foreground">
-                {(activity.elapsedMs / 1000).toFixed(1)}s
-              </span>
+            <p className="font-medium">All computer slots are busy</p>
+            <p className="mt-0.5 text-muted-foreground">
+              Stop one active Bot, start this one, and retry the same request.
+            </p>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {capacity.activeComputers
+                .filter((entry) => entry.botId !== computerId)
+                .map((entry) => (
+                  <button
+                    className="rounded-md border bg-background px-2 py-1 font-medium disabled:opacity-50"
+                    disabled={recoveringBot !== null}
+                    key={entry.botId}
+                    onClick={() => void stopAndRetry(entry.botId)}
+                    type="button"
+                  >
+                    {recoveringBot === entry.botId
+                      ? "Switching…"
+                      : `Stop ${entry.botId} and retry`}
+                  </button>
+                ))}
+            </div>
+            {recoveryProblem ? (
+              <p className="mt-2 text-destructive">{recoveryProblem}</p>
             ) : null}
-          </figcaption>
+          </div>
         ) : null}
 
         <div

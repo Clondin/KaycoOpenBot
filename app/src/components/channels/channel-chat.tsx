@@ -23,6 +23,11 @@ import { useMessageTimes } from "@/lib/channels/message-times";
 import { recordChannelActivityMutationOptions } from "@/lib/channels/mutations";
 import type { AgentChannel } from "@/lib/channels/queries";
 import { useActiveBot } from "@/lib/copilot/active-bot";
+import {
+  beginComputerTask,
+  COMPUTER_RETRY_EVENT,
+  finishComputerTask,
+} from "@/lib/copilot/computer-activity";
 import { ConversationProvider } from "@/lib/copilot/conversation";
 import { repairUnansweredToolCalls } from "@/lib/copilot/repair-history";
 import { stoppedReason } from "@/lib/copilot/stopped-turn";
@@ -345,9 +350,15 @@ export function ChannelChat({
     }
 
     setRunsInFlight((count) => count + 1);
+    beginComputerTask(
+      runtimeAgentId,
+      trimmed ||
+        `Work with ${attachments.length} attached file${attachments.length === 1 ? "" : "s"}`,
+    );
     try {
       await copilotkit.runAgent({ agent });
     } finally {
+      finishComputerTask(runtimeAgentId);
       setRunsInFlight((count) => count - 1);
     }
   };
@@ -436,12 +447,18 @@ export function ChannelChat({
     if (lastUser < 0) return;
 
     agent.setMessages(messages.slice(0, lastUser + 1) as typeof agent.messages);
+    const lastUserContent = messages[lastUser]?.content;
+    const retryGoal =
+      typeof lastUserContent === "string"
+        ? lastUserContent
+        : "Retry the latest request";
 
     void (async () => {
       setRunError(null);
       awaitingReply.current = true;
       setTurnsInFlight((count) => count + 1);
       setRunsInFlight((count) => count + 1);
+      beginComputerTask(runtimeAgentId, retryGoal);
       try {
         // Truncation ends on a user message, but anything older stays repaired the same way a
         // normal send would leave it.
@@ -453,11 +470,22 @@ export function ChannelChat({
       } catch {
         // The run-failure subscriber reports this the same way it reports any turn.
       } finally {
+        finishComputerTask(runtimeAgentId);
         setRunsInFlight((count) => count - 1);
         setTurnsInFlight((count) => count - 1);
       }
     })();
-  }, [agent, copilotkit]);
+  }, [agent, copilotkit, runtimeAgentId]);
+
+  useEffect(() => {
+    const retryComputerTask = (event: Event) => {
+      const detail = (event as CustomEvent<{ botId?: string }>).detail;
+      if (detail?.botId === runtimeAgentId) retryLatest();
+    };
+    window.addEventListener(COMPUTER_RETRY_EVENT, retryComputerTask);
+    return () =>
+      window.removeEventListener(COMPUTER_RETRY_EVENT, retryComputerTask);
+  }, [retryLatest, runtimeAgentId]);
 
   /**
    * Send the create-channel seed once, after the join gate opens or the backstop expires.

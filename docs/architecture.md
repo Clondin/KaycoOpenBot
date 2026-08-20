@@ -74,6 +74,11 @@ startup.
 
 With `COMPUTER_SUPERVISOR_URL`, each Bot gets its own computer container, workspace volume, and browser profile. Without it, all Bots share `AGENT_COMPUTER_URL`.
 
+`COMPUTER_MAX_RUNNING` limits simultaneous containers. A capacity refusal is structured so an
+administrator can see which Bot computers hold the slots, stop one deliberately, start the waiting
+Bot, and retry the same turn. Regular users receive the limit and recovery instruction without the
+identities of other users' Bots.
+
 The supervisor exposes only ensure, stop, reset, and list operations. It holds the Docker socket, so do not expose it outside the deployment network. Set `COMPUTER_RUNTIME=runsc` to run computers under gVisor on hosts that support it.
 
 The server leases a supervisor-reported computer address for one minute and deduplicates concurrent
@@ -87,11 +92,18 @@ separate model turns on `read` and `snapshot`; full reads and 200-control snapsh
 fallbacks for long pages. Each server-to-computer call emits structured `computer-timing` phase data
 for location, transport, and total duration.
 
+Multi-field form filling keeps one model decision while sending each field through the ordinary
+policy and audit gateway. Visible tables and accessible grids have a bounded row-and-column extract.
+Browser downloads are captured under `workspace/downloads`, use collision-safe names, and are
+limited to 50 MB.
+
 The watch panel uses one shared WebSocket per Bot. Chrome pushes JPEG frames only when the page
 changes, and that same connection carries page metadata, control handovers, action highlights, and
 human input. Inline and full-screen views share the connection and its latest frame, so historical
 tool rows do not poll or accumulate copies of the current screenshot. Background media is skipped
-while nobody is watching and allowed while a live viewer is attached.
+while nobody is watching and allowed while a live viewer is attached. The inline view requests a
+smaller frame and full screen raises the quality over the same connection; JPEG bytes travel as
+binary WebSocket frames instead of base64 JSON.
 
 ## Human control and secrets
 

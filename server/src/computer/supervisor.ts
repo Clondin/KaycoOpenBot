@@ -39,6 +39,24 @@ export class SupervisorError extends Error {
   }
 }
 
+export class SupervisorCapacityError extends SupervisorError {
+  readonly maxRunning?: number;
+  readonly activeComputers: { botId: string; startedAt?: string }[];
+
+  constructor(
+    message: string,
+    details: {
+      maxRunning?: number;
+      activeComputers?: { botId: string; startedAt?: string }[];
+    } = {},
+  ) {
+    super(message);
+    this.name = "SupervisorCapacityError";
+    this.maxRunning = details.maxRunning;
+    this.activeComputers = details.activeComputers ?? [];
+  }
+}
+
 export function createSupervisorClient(options: SupervisorOptions) {
   const doFetch = options.fetchImpl ?? fetch;
   const base = options.baseUrl.replace(/\/$/, "");
@@ -64,8 +82,24 @@ export function createSupervisorClient(options: SupervisorOptions) {
 
     const body = (await response.json().catch(() => null)) as {
       error?: string;
+      code?: string;
+      maxRunning?: number;
+      activeComputers?: { botId: string; startedAt?: string }[];
     } | null;
     if (!response.ok) {
+      if (response.status === 429 && body?.code === "computer_capacity") {
+        throw new SupervisorCapacityError(
+          body.error ?? "Every computer slot on this host is in use.",
+          {
+            ...(typeof body.maxRunning === "number"
+              ? { maxRunning: body.maxRunning }
+              : {}),
+            ...(Array.isArray(body.activeComputers)
+              ? { activeComputers: body.activeComputers }
+              : {}),
+          },
+        );
+      }
       throw new SupervisorError(
         body?.error ?? `The supervisor answered ${response.status}.`,
       );

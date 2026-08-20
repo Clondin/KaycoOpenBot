@@ -108,6 +108,31 @@ describe("reading and writing inside the workspace", () => {
   });
 });
 
+describe("browser downloads", () => {
+  test("saves into downloads, sanitizes the name, and never overwrites", async () => {
+    const ws = workspace();
+    const first = await ws.saveDownload("../report?.csv", Buffer.from("one"));
+    const second = await ws.saveDownload("../report?.csv", Buffer.from("two"));
+
+    expect(first.path).toBe("downloads/report_.csv");
+    expect(second.path).toBe("downloads/report_ (1).csv");
+    expect((await ws.read(first.path)).text).toBe("one");
+    expect((await ws.read(second.path)).text).toBe("two");
+  });
+
+  test("refuses a download over the configured limit", async () => {
+    const ws = createWorkspace(root, {
+      readBytes: 1000,
+      writeBytes: 1000,
+      listEntries: 500,
+      downloadBytes: 3,
+    });
+    await expect(
+      ws.saveDownload("large.bin", Buffer.from("four")),
+    ).rejects.toThrow(WorkspaceFileError);
+  });
+});
+
 describe("listing the workspace", () => {
   test("lists files and folders, recursively, relative to the root", async () => {
     const ws = workspace();

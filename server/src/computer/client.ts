@@ -4,6 +4,7 @@ import type {
   ComputerProfile,
   ComputerStatus,
   ControlState,
+  ExtractTableResult,
   HumanInput,
   HumanFileInput,
   HumanFileResult,
@@ -408,6 +409,15 @@ export function createComputerClient(options: ComputerClientOptions) {
       /** The current page as text. No navigation, so no target check applies. */
       async read(): Promise<ReadResult> {
         return (await call("/read", undefined, undefined, true)) as ReadResult;
+      },
+
+      async extractTable(): Promise<ExtractTableResult> {
+        return (await call(
+          "/table",
+          undefined,
+          undefined,
+          true,
+        )) as ExtractTableResult;
       },
 
       async snapshot(): Promise<SnapshotResult> {

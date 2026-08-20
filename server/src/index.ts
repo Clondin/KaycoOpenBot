@@ -809,12 +809,13 @@ serve<SocketData>({
         return;
       }
       const inward = new WebSocket(ws.data.upstream);
+      inward.binaryType = "arraybuffer";
       ws.data.inward = inward;
       // Frames outward, input inward. Buffered by neither side: a frame the browser is too slow for
       // should be dropped, not queued, because a stale frame is worse than a missing one.
       inward.onmessage = (event) => {
         try {
-          ws.send(String(event.data));
+          ws.send(event.data as string | ArrayBuffer);
         } catch {
           inward.close();
         }
@@ -827,7 +828,7 @@ serve<SocketData>({
         channelSocket.message(asChannelSocket(ws), raw);
         return;
       }
-      if (ws.data.inward?.readyState === 1) ws.data.inward.send(String(raw));
+      if (ws.data.inward?.readyState === 1) ws.data.inward.send(raw);
     },
     close(ws, code, reason) {
       if (!isProxiedStream(ws.data)) {

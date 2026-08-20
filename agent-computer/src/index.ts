@@ -1,5 +1,5 @@
 import { serve } from "bun";
-import type { CDPSession, Page } from "playwright";
+import type { CDPSession, Download, Page } from "playwright";
 import { parseAriaSnapshot, type SnapshotElement } from "./aria-snapshot";
 import { isOpenPath, matchesToken, offeredToken } from "./authorisation";
 import { isPlainBotId } from "./bot-id";
@@ -83,7 +83,7 @@ const NAVIGATION_TIMEOUT_MS = Number.parseInt(
  * timeout before saying so, and the person is sitting watching a screen that is not changing.
  */
 const ACTION_TIMEOUT_MS = Number.parseInt(
-  process.env.ACTION_TIMEOUT_MS ?? "10000",
+  process.env.ACTION_TIMEOUT_MS ?? "4000",
   10,
 );
 
@@ -191,6 +191,8 @@ const DEFAULT_BOT_ID = (() => {
 })();
 
 const mediaClients = new WeakMap<Page, CDPSession>();
+const downloadPages = new WeakSet<Page>();
+const DOWNLOAD_LIMIT_BYTES = 50 * 1024 * 1024;
 const BACKGROUND_MEDIA_PATTERNS = [
   "*.mp4",
   "*.webm",
@@ -211,8 +213,42 @@ async function setRichMedia(target: Page, allowed: boolean): Promise<void> {
   });
 }
 
+async function captureDownload(botId: string, download: Download) {
+  const stream = await download.createReadStream();
+  if (!stream) throw new Error("The browser did not provide the download.");
+  const chunks: Buffer[] = [];
+  let bytes = 0;
+  for await (const chunk of stream) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    bytes += buffer.byteLength;
+    if (bytes > DOWNLOAD_LIMIT_BYTES) {
+      await download.cancel().catch(() => undefined);
+      throw new Error("Downloads are limited to 50 MB.");
+    }
+    chunks.push(buffer);
+  }
+  const saved = await workspace.saveDownload(
+    download.suggestedFilename(),
+    Buffer.concat(chunks, bytes),
+  );
+  sendToViewer(sessionFor(botId), { type: "download", ...saved });
+  console.info(JSON.stringify({ type: "download-saved", botId, ...saved }));
+}
+
 async function currentPage(botId: string): Promise<Page> {
   const target = await profiles.page(botId);
+  if (!downloadPages.has(target)) {
+    downloadPages.add(target);
+    target.on("download", (download) => {
+      void captureDownload(botId, download).catch((error) => {
+        const message = describe(error, "The download could not be saved.");
+        sendToViewer(sessionFor(botId), { type: "download", error: message });
+        console.error(
+          JSON.stringify({ type: "download-failed", botId, error: message }),
+        );
+      });
+    });
+  }
   if (!mediaClients.has(target)) {
     // CDP blocking preserves Chromium's normal HTTP cache; Playwright request interception does not.
     await setRichMedia(target, Boolean(sessionFor(botId).viewer));
@@ -366,12 +402,117 @@ async function resolveRef(
   expectedSnapshotId: number | undefined,
 ) {
   const locator = locateRef(session, target, ref, expectedSnapshotId);
-  if ((await locator.count()) === 0) {
+  const count = await locator.count();
+  if (count === 0) {
     throw new StaleSnapshotError(
       `Nothing on this page has the ref ${ref}. Take a new snapshot and use the refs it returns.`,
     );
   }
+  if (count > 1) {
+    throw new StaleSnapshotError(
+      `Ref ${ref} no longer identifies one control. Observe the page and use a fresh ref.`,
+    );
+  }
+  if (!(await locator.isVisible().catch(() => false))) {
+    throw new StaleSnapshotError(
+      `The control for ref ${ref} is no longer visible. Observe the page and use a fresh ref.`,
+    );
+  }
+  if (!(await locator.isEnabled().catch(() => false))) {
+    throw new StaleSnapshotError(
+      `The control for ref ${ref} is disabled. Check the page for what is still required before trying again.`,
+    );
+  }
   return locator;
+}
+
+/** Visible tables as bounded rows and columns, avoiding screenshots and long prose extraction. */
+async function extractPageTables(target: Page) {
+  const tables = await target.evaluate(() => {
+    let characterBudget = 20_000;
+    const clean = (value: string | null | undefined) =>
+      (value ?? "").replace(/\s+/g, " ").trim().slice(0, 250);
+    const visible = (element: Element) => {
+      const style = getComputedStyle(element);
+      const box = element.getBoundingClientRect();
+      return (
+        style.display !== "none" &&
+        style.visibility !== "hidden" &&
+        box.width > 0 &&
+        box.height > 0
+      );
+    };
+    return [
+      ...document.querySelectorAll('table, [role="table"], [role="grid"]'),
+    ]
+      .filter(
+        (table, index, all) =>
+          visible(table) &&
+          !all.some(
+            (candidate, candidateIndex) =>
+              candidateIndex < index && candidate.contains(table),
+          ),
+      )
+      .slice(0, 5)
+      .map((table) => {
+        const extractedRows = [...table.querySelectorAll('tr, [role="row"]')]
+          .filter(visible)
+          .slice(0, 101)
+          .map((row) =>
+            [
+              ...row.querySelectorAll(
+                'th, td, [role="columnheader"], [role="rowheader"], [role="cell"], [role="gridcell"]',
+              ),
+            ]
+              .filter(visible)
+              .slice(0, 20)
+              .map((cell) => clean(cell.textContent)),
+          )
+          .filter((row) => row.some(Boolean));
+        const first = extractedRows[0] ?? [];
+        const firstDomRow = table.querySelector('tr, [role="row"]');
+        const firstIsHeader = Boolean(
+          firstDomRow?.querySelector('th, [role="columnheader"]'),
+        );
+        const caption =
+          table.querySelector("caption")?.textContent ??
+          table.getAttribute("aria-label") ??
+          table
+            .getAttribute("aria-labelledby")
+            ?.split(/\s+/)
+            .map((id) => document.getElementById(id)?.textContent ?? "")
+            .join(" ");
+        const headers = firstIsHeader ? first : [];
+        characterBudget -= headers.reduce(
+          (total, cell) => total + cell.length,
+          0,
+        );
+        const sourceRows = firstIsHeader
+          ? extractedRows.slice(1, 101)
+          : extractedRows.slice(0, 100);
+        const rows: string[][] = [];
+        for (const row of sourceRows) {
+          const cost = row.reduce((total, cell) => total + cell.length, 0);
+          if (cost > characterBudget) break;
+          rows.push(row);
+          characterBudget -= cost;
+        }
+        return {
+          ...(clean(caption) ? { caption: clean(caption) } : {}),
+          headers,
+          rows,
+          truncated:
+            extractedRows.length > 100 || rows.length < sourceRows.length,
+        };
+      });
+  });
+
+  return {
+    url: target.url(),
+    title: await target.title(),
+    tables,
+    truncated: tables.length >= 5 || tables.some((table) => table.truncated),
+  };
 }
 
 class StaleSnapshotError extends Error {
@@ -434,7 +575,25 @@ serve<StreamData>({
         const send = (frame: unknown) => {
           // A closed socket starts a fresh cast on the next connection.
           try {
-            ws.send(JSON.stringify(frame));
+            if (
+              frame &&
+              typeof frame === "object" &&
+              (frame as { type?: unknown }).type === "frame" &&
+              typeof (frame as { data?: unknown }).data === "string"
+            ) {
+              const value = frame as {
+                data: string;
+                width?: number;
+                height?: number;
+              };
+              const jpeg = Buffer.from(value.data, "base64");
+              const header = Buffer.allocUnsafe(8);
+              header.writeUInt32BE(value.width ?? 1280, 0);
+              header.writeUInt32BE(value.height ?? 800, 4);
+              ws.send(Buffer.concat([header, jpeg]));
+            } else {
+              ws.send(JSON.stringify(frame));
+            }
           } catch {
             void stopViewer(session, ws);
           }
@@ -495,6 +654,10 @@ serve<StreamData>({
       try {
         message = JSON.parse(String(raw)) as InputMessage;
       } catch {
+        return;
+      }
+      if (message.type === "viewer") {
+        await session.viewer.cast.resize(message.mode).catch(() => undefined);
         return;
       }
       // A person's input is accepted only while they hold the wheel. The socket being open is not permission:
@@ -1006,6 +1169,17 @@ serve<StreamData>({
       } catch (error) {
         return json(
           { error: describe(error, "Reading the page failed.") },
+          502,
+        );
+      }
+    }
+
+    if (url.pathname === "/table" && request.method === "GET") {
+      try {
+        return json(await extractPageTables(await currentPage(botId)));
+      } catch (error) {
+        return json(
+          { error: describe(error, "Extracting the table failed.") },
           502,
         );
       }

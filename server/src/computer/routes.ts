@@ -21,6 +21,7 @@ import {
   type ComputerGateway,
 } from "./gateway";
 import { type PolicyStore, parseActionPolicy } from "./policy-store";
+import { SupervisorCapacityError } from "./supervisor";
 
 /**
  * The Bot computer's surface, behind the same session guard as every other API route.
@@ -48,6 +49,24 @@ export function createComputerRoutes(
   const humanFileBase64Limit = Math.ceil((10 * 1024 * 1024 * 4) / 3) + 4;
 
   /**
+   * The deployment-wide computer list is an administrator collection, not a Bot resource.
+   *
+   * It must be registered before the per-Bot access middleware below. The admin page uses a
+   * placeholder path id because the list has no natural Bot id; sending that placeholder through
+   * `canUseBot` made the page answer "There is no such Bot" before it could list anything, which in
+   * turn left an operator unable to stop the browser occupying a constrained host's last slot.
+   */
+  routes.get("/:botId/computers", requireUser, async (context) => {
+    const denied = requireAdmin(context);
+    if (denied) return denied;
+    try {
+      return context.json(await gateway.computers());
+    } catch (error) {
+      return computerErrorResponse(context, error);
+    }
+  });
+
+  /**
    * Every route under a Bot id, in one place.
    *
    * The Bot travels in the path, so each route would otherwise have to remember to ask, and the one
@@ -73,7 +92,7 @@ export function createComputerRoutes(
     try {
       return context.json(await gateway.warm(context.req.param("botId")));
     } catch (error) {
-      return context.json({ error: describe(error) }, statusFor(error));
+      return computerErrorResponse(context, error);
     }
   });
 
@@ -83,7 +102,7 @@ export function createComputerRoutes(
         await client.forBot(context.req.param("botId")).screenshot(),
       );
     } catch (error) {
-      return context.json({ error: describe(error) }, statusFor(error));
+      return computerErrorResponse(context, error);
     }
   });
 
@@ -91,7 +110,17 @@ export function createComputerRoutes(
     try {
       return context.json(await gateway.read(context.req.param("botId")));
     } catch (error) {
-      return context.json({ error: describe(error) }, statusFor(error));
+      return computerErrorResponse(context, error);
+    }
+  });
+
+  routes.get("/:botId/table", async (context) => {
+    try {
+      return context.json(
+        await gateway.extractTable(context.req.param("botId")),
+      );
+    } catch (error) {
+      return computerErrorResponse(context, error);
     }
   });
 
@@ -99,7 +128,7 @@ export function createComputerRoutes(
     try {
       return context.json(await gateway.observe(context.req.param("botId")));
     } catch (error) {
-      return context.json({ error: describe(error) }, statusFor(error));
+      return computerErrorResponse(context, error);
     }
   });
 
@@ -133,7 +162,7 @@ export function createComputerRoutes(
       if (error instanceof NavigationRefusedError) {
         return context.json({ error: error.message }, 403);
       }
-      return context.json({ error: describe(error) }, statusFor(error));
+      return computerErrorResponse(context, error);
     }
   });
 
@@ -141,7 +170,7 @@ export function createComputerRoutes(
     try {
       return context.json(await gateway.snapshot(context.req.param("botId")));
     } catch (error) {
-      return context.json({ error: describe(error) }, statusFor(error));
+      return computerErrorResponse(context, error);
     }
   });
 
@@ -215,7 +244,7 @@ export function createComputerRoutes(
     try {
       return context.json(await gateway.control(context.req.param("botId")));
     } catch (error) {
-      return context.json({ error: describe(error) }, statusFor(error));
+      return computerErrorResponse(context, error);
     }
   });
 
@@ -231,21 +260,6 @@ export function createComputerRoutes(
       ),
     ),
   );
-
-  /**
-   * The computers, for the admin surface.
-   *
-   * Not per-Bot in the path the way the acting routes are: this asks the computer what it holds, and
-   * it holds a list. `:botId` is still there because every route under this router has it and the
-   * gateway wants somebody to attribute the call to.
-   */
-  routes.get("/:botId/computers", async (context) => {
-    try {
-      return context.json(await gateway.computers());
-    } catch (error) {
-      return context.json({ error: describe(error) }, statusFor(error));
-    }
-  });
 
   /** Stop the browser, keep the logins. */
   routes.post("/:botId/computers/stop", (context) =>
@@ -326,7 +340,7 @@ export function createComputerRoutes(
         }),
       );
     } catch (error) {
-      return context.json({ error: describe(error) }, statusFor(error));
+      return computerErrorResponse(context, error);
     }
   });
 
@@ -360,7 +374,7 @@ export function createComputerRoutes(
         } as Parameters<typeof gateway.humanInput>[1]),
       );
     } catch (error) {
-      return context.json({ error: describe(error) }, statusFor(error));
+      return computerErrorResponse(context, error);
     }
   });
 
@@ -533,7 +547,7 @@ async function act(
         423,
       );
     }
-    return context.json({ error: describe(error) }, statusFor(error));
+    return computerErrorResponse(context, error);
   }
 }
 
@@ -625,7 +639,26 @@ function describe(error: unknown): string {
  * not running (an operator fixes it), the refs are stale (the model fixes it by snapshotting again),
  * and everything else. Navigation established this; the acting routes follow it.
  */
-function statusFor(error: unknown): 409 | 423 | 500 | 503 {
+function computerErrorResponse(context: ComputerContext, error: unknown) {
+  if (error instanceof SupervisorCapacityError) {
+    const administrator = context.var.actor.role === "admin";
+    return context.json(
+      {
+        error: error.message,
+        code: "computer_capacity",
+        ...(error.maxRunning !== undefined
+          ? { maxRunning: error.maxRunning }
+          : {}),
+        ...(administrator ? { activeComputers: error.activeComputers } : {}),
+      },
+      429,
+    );
+  }
+  return context.json({ error: describe(error) }, statusFor(error));
+}
+
+function statusFor(error: unknown): 409 | 423 | 429 | 500 | 503 {
+  if (error instanceof SupervisorCapacityError) return 429;
   if (error instanceof StaleSnapshotError) return 409;
   // The same answer as a stale snapshot, because it is the same instruction: the refs are wrong, take
   // another snapshot. Not 503, which says the computer is unavailable and sends an operator hunting a

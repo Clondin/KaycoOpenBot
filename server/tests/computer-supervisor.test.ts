@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   createSupervisorClient,
+  SupervisorCapacityError,
   SupervisorError,
 } from "../src/computer/supervisor";
 
@@ -71,6 +72,33 @@ describe("locating a Bot's computer", () => {
     expect(client.locate("bad id")).rejects.toThrow(
       "A bot id may contain only letters.",
     );
+  });
+
+  test("capacity includes the active computers needed for recovery", async () => {
+    const client = clientWith(() =>
+      Response.json(
+        {
+          error: "Every slot is busy.",
+          code: "computer_capacity",
+          maxRunning: 2,
+          activeComputers: [
+            { botId: "sales", startedAt: "2026-08-20T12:00:00.000Z" },
+          ],
+        },
+        { status: 429 },
+      ),
+    );
+
+    try {
+      await client.locate("support");
+      throw new Error("Expected locate to fail");
+    } catch (error) {
+      expect(error).toBeInstanceOf(SupervisorCapacityError);
+      expect((error as SupervisorCapacityError).maxRunning).toBe(2);
+      expect((error as SupervisorCapacityError).activeComputers).toEqual([
+        { botId: "sales", startedAt: "2026-08-20T12:00:00.000Z" },
+      ]);
+    }
   });
 
   test("an unreachable supervisor says so, rather than looking like a broken computer", async () => {
