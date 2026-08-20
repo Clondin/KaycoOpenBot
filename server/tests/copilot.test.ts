@@ -480,9 +480,11 @@ describe("registered Copilot agents", () => {
     );
 
     const consoleError = spyOn(console, "error").mockImplementation(() => {});
+    const agent = agents["general-assistant"];
+    if (!agent) throw new Error("Expected the built-in agent");
     try {
       await expect(
-        agents["general-assistant"]?.runAgent({
+        agent.clone().runAgent({
           forwardedProps: {
             openbotTaskRunId: "task-7",
             openbotChannelId: "channel-7",
@@ -619,7 +621,7 @@ describe("standing agent roles", () => {
 
     const consoleError = spyOn(console, "error").mockImplementation(() => {});
     try {
-      await expect(agents.agent_expense?.runAgent()).rejects.toThrow(
+      await expect(agents.agent_expense?.clone().runAgent()).rejects.toThrow(
         "Expense Manager has been deleted.",
       );
     } finally {

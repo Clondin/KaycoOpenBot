@@ -33,8 +33,11 @@ describe("Codex AG-UI adapter", () => {
       preferences: { model: "gpt-5.6", effort: "high" },
     });
 
+    // CopilotKit clones every registered agent before a web request. The clone must retain the
+    // App Server manager, thread store, preferences, and tool loader owned by this adapter.
+    const requestAgent = agent.clone();
     const events = await collect(
-      agent.run({
+      requestAgent.run({
         threadId: "intelligence-thread",
         runId: "run-1",
         state: {},

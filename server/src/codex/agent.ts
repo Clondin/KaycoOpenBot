@@ -51,6 +51,11 @@ export class CodexAgent extends AbstractAgent {
     super({ agentId: options.agentId, description: options.name });
   }
 
+  /** Preserve the per-user App Server dependencies in CopilotKit's per-request clone. */
+  override clone(): this {
+    return Object.assign(super.clone(), { options: this.options }) as this;
+  }
+
   run(input: RunAgentInput): Observable<BaseEvent> {
     return new Observable<BaseEvent>((subscriber) => {
       let settled = false;
