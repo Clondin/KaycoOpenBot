@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { resolve } from "node:path";
 import { loadConfig } from "../src/config";
 
 // Intelligence is part of the MINIMUM contract, so it belongs in the base environment every other
@@ -215,5 +216,33 @@ describe("deployment configuration", () => {
         BETTER_AUTH_URL: "http://localhost:3001",
       }),
     ).toThrow("Google authentication requires BETTER_AUTH_SECRET");
+  });
+
+  test("enables an isolated Codex App Server runtime explicitly", () => {
+    const config = loadConfig({
+      ...baseEnvironment,
+      OPENBOT_CODEX_ENABLED: "true",
+      CODEX_EXECUTABLE: "/opt/openbot/bin/codex",
+      CODEX_HOME_ROOT: "/var/lib/openbot/codex-users",
+      CODEX_PROCESS_IDLE_MS: "45000",
+      CODEX_DEFAULT_MODEL: "gpt-5.6-codex",
+    });
+
+    expect(config.codex).toEqual({
+      executable: "/opt/openbot/bin/codex",
+      homeRoot: resolve("/var/lib/openbot/codex-users"),
+      idleMs: 45_000,
+      defaultModel: "gpt-5.6-codex",
+    });
+  });
+
+  test("rejects an unsafe Codex process lifetime", () => {
+    expect(() =>
+      loadConfig({
+        ...baseEnvironment,
+        OPENBOT_CODEX_ENABLED: "true",
+        CODEX_PROCESS_IDLE_MS: "9999",
+      }),
+    ).toThrow("CODEX_PROCESS_IDLE_MS must be at least 10000");
   });
 });

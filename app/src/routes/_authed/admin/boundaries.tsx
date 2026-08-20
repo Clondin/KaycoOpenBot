@@ -14,6 +14,7 @@ type PolicyMode = "dry-run" | "enforce";
 type ActionPolicy = {
   mode: PolicyMode;
   deny: string[];
+  approve: string[];
   allow: string[];
 };
 
@@ -39,6 +40,22 @@ const PRESETS: { label: string; rule: string; cost?: string }[] = [
   },
 ];
 
+const APPROVAL_PRESETS: { label: string; rule: string; cost?: string }[] = [
+  {
+    label: "Approve form submissions",
+    rule: '(intent == "activate" && contains(element.name, "submit")) || (tool.name == "computer_key" && key == "Enter")',
+    cost: "Enter is treated as consequential because the browser cannot prove whether a focused form will submit until it happens.",
+  },
+  {
+    label: "Approve file changes",
+    rule: 'intent == "write_file"',
+  },
+  {
+    label: "Approve external writes",
+    rule: 'intent == "write_tool"',
+  },
+];
+
 export const Route = createFileRoute("/_authed/admin/boundaries")({
   component: BoundariesPage,
 });
@@ -49,6 +66,7 @@ function BoundariesPage() {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [draft, setDraft] = useState("");
+  const [approvalDraft, setApprovalDraft] = useState("");
 
   const load = useCallback(async () => {
     try {
@@ -60,7 +78,7 @@ function BoundariesPage() {
         return;
       }
       const body = (await response.json()) as { policy: ActionPolicy };
-      setPolicy(body.policy);
+      setPolicy({ ...body.policy, approve: body.policy.approve ?? [] });
       setProblem(null);
     } catch {
       setProblem("The boundary could not be reached.");
@@ -125,6 +143,13 @@ function BoundariesPage() {
     if (!trimmed || policy.deny.includes(trimmed)) return;
     void save({ ...policy, deny: [...policy.deny, trimmed] });
     setDraft("");
+  };
+
+  const addApprovalRule = (rule: string) => {
+    const trimmed = rule.trim();
+    if (!trimmed || policy.approve.includes(trimmed)) return;
+    void save({ ...policy, approve: [...policy.approve, trimmed] });
+    setApprovalDraft("");
   };
 
   return (
@@ -229,6 +254,85 @@ function BoundariesPage() {
                 className="shrink-0"
                 disabled={saving || policy.deny.includes(preset.rule)}
                 onClick={() => addRule(preset.rule)}
+                size="sm"
+                variant="outline"
+              >
+                {preset.label}
+              </Button>
+              {preset.cost ? (
+                <span className="pt-1 text-xs text-muted-foreground">
+                  {preset.cost}
+                </span>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      </PageSection>
+
+      <PageSection title="It needs your approval before">
+        {policy.approve.length === 0 ? (
+          <p className="mt-2 text-sm text-muted-foreground">
+            No approval rules. Anything not refused above follows the allow
+            rules below.
+          </p>
+        ) : (
+          <ul className="mt-2 divide-y divide-border rounded-md border border-border">
+            {policy.approve.map((rule) => (
+              <li
+                className="flex items-center justify-between gap-4 px-3 py-2"
+                key={rule}
+              >
+                <code className="min-w-0 break-all font-mono text-xs">
+                  {rule}
+                </code>
+                <Button
+                  disabled={saving}
+                  onClick={() =>
+                    void save({
+                      ...policy,
+                      approve: policy.approve.filter((one) => one !== rule),
+                    })
+                  }
+                  size="sm"
+                  variant="ghost"
+                >
+                  Remove
+                </Button>
+              </li>
+            ))}
+          </ul>
+        )}
+
+        <div className="mt-3 flex gap-2">
+          <Input
+            aria-label="An approval rule, written in CEL"
+            className="min-w-0 flex-1 font-mono text-xs"
+            onChange={(event) => {
+              setApprovalDraft(event.target.value);
+              setSaved(false);
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") addApprovalRule(approvalDraft);
+            }}
+            placeholder='intent == "write_file"'
+            value={approvalDraft}
+          />
+          <Button
+            disabled={saving || approvalDraft.trim().length === 0}
+            onClick={() => addApprovalRule(approvalDraft)}
+            size="sm"
+          >
+            Add rule
+          </Button>
+        </div>
+
+        <ul className="mt-3 space-y-2">
+          {APPROVAL_PRESETS.map((preset) => (
+            <li className="flex items-start gap-3" key={preset.rule}>
+              <Button
+                className="shrink-0"
+                disabled={saving || policy.approve.includes(preset.rule)}
+                onClick={() => addApprovalRule(preset.rule)}
                 size="sm"
                 variant="outline"
               >

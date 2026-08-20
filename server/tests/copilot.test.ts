@@ -263,6 +263,33 @@ describe("registered Copilot agents", () => {
     expect(agents.risk).toBeInstanceOf(HttpAgent);
     expect(resolverInvoked).toBe(false);
   });
+
+  test("replaces built-in agents with the signed-in user's Codex runtime", async () => {
+    let resolverInvoked = false;
+    const replacement = new HttpAgent({ url: "http://codex.local/ag-ui" });
+    const agents = await resolveRuntimeAgents(
+      async () => [
+        {
+          id: "general-assistant",
+          name: "General Assistant",
+          type: "built_in" as const,
+          systemPrompt: "Be helpful.",
+        },
+      ],
+      { provider: "openai", defaultModel: "gpt-4.1" },
+      async () => {
+        resolverInvoked = true;
+        return "provider-key";
+      },
+      {
+        userId: "user-7",
+        provider: { agentFor: async () => replacement },
+      },
+    );
+
+    expect(agents["general-assistant"]).toBe(replacement);
+    expect(resolverInvoked).toBe(false);
+  });
 });
 
 /**

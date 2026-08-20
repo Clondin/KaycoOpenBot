@@ -3,6 +3,10 @@
  * for durable threads and memory. Configuration the product cannot function without belongs at the
  * boot boundary.
  */
+import { existsSync } from "node:fs";
+import { createRequire } from "node:module";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { devAuthEnabled } from "./auth/dev-actor";
 import type { ActionPolicy } from "./computer/policy";
 import { parseActionPolicy } from "./computer/policy-store";
@@ -77,6 +81,16 @@ export type DeploymentConfig = {
      * precedence, which is the only subtle thing about them, impossible to see.
      */
     policy?: ActionPolicy;
+  };
+  /**
+   * Per-user Codex App Server processes. The process owns ChatGPT authentication and usage; OpenBot
+   * never receives or stores an OAuth token in its database.
+   */
+  codex?: {
+    executable: string;
+    homeRoot: string;
+    idleMs: number;
+    defaultModel?: string;
   };
 };
 
@@ -348,6 +362,83 @@ function computerConfig(
   };
 }
 
+function positiveInteger(
+  environment: Environment,
+  name: string,
+  fallback: number,
+): number {
+  const raw = optional(environment, name);
+  if (!raw) return fallback;
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(`${name} must be a positive integer`);
+  }
+  return value;
+}
+
+function codexConfig(environment: Environment): DeploymentConfig["codex"] {
+  if (!booleanFlag(environment, "OPENBOT_CODEX_ENABLED")) return undefined;
+
+  const idleMs = positiveInteger(
+    environment,
+    "CODEX_PROCESS_IDLE_MS",
+    5 * 60_000,
+  );
+  if (idleMs < 10_000) {
+    throw new Error("CODEX_PROCESS_IDLE_MS must be at least 10000");
+  }
+
+  const defaultModel = optional(environment, "CODEX_DEFAULT_MODEL");
+  const bundledExecutable = bundledCodexExecutable();
+  return {
+    executable:
+      optional(environment, "CODEX_EXECUTABLE") ?? bundledExecutable ?? "codex",
+    homeRoot: resolve(
+      optional(environment, "CODEX_HOME_ROOT") ?? ".openbot/codex-users",
+    ),
+    idleMs,
+    ...(defaultModel ? { defaultModel } : {}),
+  };
+}
+
+function bundledCodexExecutable(): string | undefined {
+  const targets: Record<string, readonly [string, string]> = {
+    "linux:x64": ["@openai/codex-linux-x64", "x86_64-unknown-linux-musl"],
+    "linux:arm64": ["@openai/codex-linux-arm64", "aarch64-unknown-linux-musl"],
+    "darwin:x64": ["@openai/codex-darwin-x64", "x86_64-apple-darwin"],
+    "darwin:arm64": ["@openai/codex-darwin-arm64", "aarch64-apple-darwin"],
+    "win32:x64": ["@openai/codex-win32-x64", "x86_64-pc-windows-msvc"],
+    "win32:arm64": ["@openai/codex-win32-arm64", "aarch64-pc-windows-msvc"],
+  };
+  const target = targets[`${process.platform}:${process.arch}`];
+  if (!target) return undefined;
+
+  try {
+    const localRequire = createRequire(import.meta.url);
+    const codexPackage = localRequire.resolve("@openai/codex/package.json");
+    const packageRequire = createRequire(codexPackage);
+    const platformPackage = packageRequire.resolve(`${target[0]}/package.json`);
+    const executable = join(
+      dirname(platformPackage),
+      "vendor",
+      target[1],
+      "bin",
+      process.platform === "win32" ? "codex.exe" : "codex",
+    );
+    return existsSync(executable) ? executable : undefined;
+  } catch {
+    // A system-installed `codex` can still satisfy the feature when the optional native package did
+    // not install for this architecture.
+    const shim = fileURLToPath(
+      new URL(
+        `../node_modules/.bin/${process.platform === "win32" ? "codex.exe" : "codex"}`,
+        import.meta.url,
+      ),
+    );
+    return existsSync(shim) ? shim : undefined;
+  }
+}
+
 /**
  * The action policy, as JSON in one variable.
  *
@@ -398,5 +489,6 @@ export function loadConfig(
     auth: authConfig(environment, google, allowedOrigins),
     devNoAuth: devAuthEnabled(environment),
     computer: computerConfig(environment),
+    codex: codexConfig(environment),
   };
 }

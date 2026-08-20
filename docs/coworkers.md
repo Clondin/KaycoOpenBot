@@ -97,3 +97,13 @@ A coworker's role does not grant capabilities. Capabilities are governed separat
 - deployment skills are managed by administrators.
 
 See [architecture.md](architecture.md).
+
+## Reference team
+
+The example fintech package ships three production-oriented patterns in addition to the general, knowledge, and risk coworkers:
+
+- **Research Analyst** separates facts, inferences, uncertainty, and recommendations with inline source evidence.
+- **Operations Coordinator** turns requests into resumable work, prepares governed actions, and verifies outcomes.
+- **Audit Reviewer** reconstructs runs and approvals as read-oriented findings without changing source systems.
+
+Their standing prompts are intentionally specific about evidence and completion, while authority remains outside the prompt in grants, policy, approvals, and server-side action gateways.

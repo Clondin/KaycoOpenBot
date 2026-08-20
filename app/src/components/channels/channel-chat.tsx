@@ -4,12 +4,14 @@ import {
   useAgent,
   useCopilotKit,
 } from "@copilotkit/react-core/v2";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toAgentOptions } from "@/components/channels/composer";
 import { ConversationView } from "@/components/channels/conversation-view";
+import { TaskRunStatus } from "@/components/tasks/task-run-status";
 import {
   seedMessage,
+  takeAssignedWork,
   takeFirstMessage,
   transcriptMessages,
 } from "@/components/channels/transcript-messages";
@@ -17,9 +19,16 @@ import { agentListQueryOptions } from "@/lib/agents/queries";
 import { recordChannelActivityMutationOptions } from "@/lib/channels/mutations";
 import type { AgentChannel } from "@/lib/channels/queries";
 import { useActiveBot } from "@/lib/copilot/active-bot";
+import { useActiveRun } from "@/lib/copilot/active-run";
 import { ConversationProvider } from "@/lib/copilot/conversation";
 import { repairUnansweredToolCalls } from "@/lib/copilot/repair-history";
 import { useSkillCommands } from "@/lib/plugins/skill-commands";
+import {
+  channelRunsQueryOptions,
+  createTaskRun,
+  runKeys,
+  transitionTaskRun,
+} from "@/lib/runs/queries";
 
 /**
  * Backstop for the first message of a new channel; a stalled join must not lose the message.
@@ -39,6 +48,7 @@ export function ChannelChat({
   channel: AgentChannel;
   runtimeAgentId: string;
 }) {
+  const queryClient = useQueryClient();
   // The core attaches the frontend tool registry; direct agent runs do not.
   const { copilotkit } = useCopilotKit();
   // Mentions are scoped to the channel's permitted agents.
@@ -53,18 +63,40 @@ export function ChannelChat({
     ],
   });
 
+  const runHistory = useQuery(channelRunsQueryOptions(channel.id));
+  const [activeRunId, setActiveRunId] = useState<string | undefined>();
+  const activeRunIdRef = useRef<string | undefined>(activeRunId);
+  activeRunIdRef.current = activeRunId;
+  useActiveRun({ runId: activeRunId, channelId: channel.id });
+
+  // Recover the durable identity after a reload while Intelligence reconnects to the same run.
+  useEffect(() => {
+    if (activeRunId) return;
+    const recoverable = runHistory.data?.find((run) =>
+      [
+        "queued",
+        "running",
+        "waiting_for_approval",
+        "waiting_for_input",
+      ].includes(run.status),
+    );
+    if (recoverable) setActiveRunId(recoverable.id);
+  }, [activeRunId, runHistory.data]);
+
   /**
    * First-message seed from the compose screen. It is taken once per mount and retained until the
    * agent has its own messages because joining a fresh thread can temporarily empty the agent.
    */
+  const [assigned] = useState(() => takeAssignedWork(channel.id));
   const [seed] = useState<Message | null>(() => {
-    const pending = takeFirstMessage(channel.id);
+    const pending = assigned?.text ?? takeFirstMessage(channel.id);
     return pending ? seedMessage(pending, crypto.randomUUID()) : null;
   });
 
   /** Cleared by the send-on-mount effect without restarting it. */
   const seedRef = useRef(seed);
   seedRef.current = seed;
+  const assignedRunRef = useRef(assigned?.runId);
 
   /** Promise gate for ordering the first message after the thread join when possible. */
   const openJoinGate = useRef<() => void>(() => {});
@@ -140,6 +172,7 @@ export function ChannelChat({
   // Run failures arrive as events and are reported only for turns started in this mount.
   const [runError, setRunError] = useState<string | null>(null);
   const awaitingReply = useRef(false);
+  const memoryContextRef = useRef("");
 
   /**
    * Tell the roster what was just said. Failures here must not block the conversation.
@@ -161,7 +194,12 @@ export function ChannelChat({
   /**
    * Send a user turn through the channel, including activity reporting and history repair.
    */
-  const say = async (text: string, skillInstructions: string[] = []) => {
+  const say = async (
+    text: string,
+    skillInstructions: string[] = [],
+    parentRunId?: string,
+    existingRunId?: string,
+  ) => {
     const trimmed = text.trim();
     if (!trimmed) return;
 
@@ -177,6 +215,83 @@ export function ChannelChat({
 
     setRunError(null);
     awaitingReply.current = true;
+
+    let runId: string;
+    try {
+      const run = existingRunId
+        ? { id: existingRunId }
+        : await createTaskRun({
+            channelId: channel.id,
+            agentId: runtimeAgentId,
+            title: parentRunId
+              ? "Retried conversation task"
+              : "Conversation task",
+            ...(parentRunId ? { parentRunId } : {}),
+          });
+      runId = run.id;
+      activeRunIdRef.current = run.id;
+      setActiveRunId(run.id);
+      await transitionTaskRun(run.id, "running");
+      void queryClient.invalidateQueries({
+        queryKey: runKeys.channel(channel.id),
+      });
+    } catch (error) {
+      awaitingReply.current = false;
+      setRunError(
+        error instanceof Error
+          ? error.message
+          : "The task could not be recorded, so it was not started.",
+      );
+      return;
+    }
+
+    // Inspectable memory is automatically supplied as system context and only appended when its
+    // content changes, so durable preferences work without silently bloating every turn.
+    try {
+      const response = await fetch("/api/work/memory", {
+        credentials: "include",
+      });
+      if (response.ok) {
+        const body = (await response.json()) as {
+          memory: Array<{
+            agentId: string | null;
+            confidence: number;
+            content: string;
+            kind: string;
+            pinned: boolean;
+            scope: "user" | "agent" | "project";
+            title: string;
+          }>;
+        };
+        const relevant = body.memory
+          .filter(
+            (item) =>
+              item.scope === "user" ||
+              (item.scope === "agent" && item.agentId === runtimeAgentId),
+          )
+          .sort((left, right) => Number(right.pinned) - Number(left.pinned))
+          .slice(0, 20)
+          .map(
+            (item) =>
+              `- [${item.kind}; confidence ${item.confidence}%] ${item.title}: ${item.content}`,
+          )
+          .join("\n")
+          .slice(0, 8_000);
+        const memoryContext = relevant
+          ? `Inspectable OpenBot memory for this conversation follows. Treat it as potentially stale, use it only when relevant, and do not claim it came from the current message.\n${relevant}`
+          : "";
+        if (memoryContext && memoryContext !== memoryContextRef.current) {
+          agent.addMessage({
+            content: memoryContext,
+            id: crypto.randomUUID(),
+            role: "system",
+          });
+          memoryContextRef.current = memoryContext;
+        }
+      }
+    } catch {
+      // Memory is supporting context; an unavailable memory endpoint must not block the task.
+    }
 
     /*
      * THE SKILL GOES IN FRONT OF THE MESSAGE, AS A SYSTEM TURN. A `/` chip is one token in the
@@ -211,7 +326,22 @@ export function ChannelChat({
       agent.setMessages(repaired as typeof agent.messages);
     }
 
-    await copilotkit.runAgent({ agent });
+    try {
+      await copilotkit.runAgent({ agent });
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : "The Bot stopped without saying why.";
+      await transitionTaskRun(runId, "failed", message).catch(() => undefined);
+      awaitingReply.current = false;
+      activeRunIdRef.current = undefined;
+      setActiveRunId(undefined);
+      void queryClient.invalidateQueries({
+        queryKey: runKeys.channel(channel.id),
+      });
+      throw error;
+    }
   };
 
   useEffect(() => {
@@ -219,6 +349,18 @@ export function ChannelChat({
       if (!awaitingReply.current) return;
       awaitingReply.current = false;
       setRunError(message);
+      const runId = activeRunIdRef.current;
+      if (runId) {
+        void transitionTaskRun(runId, "failed", message)
+          .catch(() => undefined)
+          .finally(() => {
+            activeRunIdRef.current = undefined;
+            setActiveRunId(undefined);
+            void queryClient.invalidateQueries({
+              queryKey: runKeys.channel(channel.id),
+            });
+          });
+      }
     };
     const subscription = agent.subscribe?.({
       onRunErrorEvent: ({ event }) =>
@@ -239,10 +381,31 @@ export function ChannelChat({
           .find((message) => message.role === "assistant");
         const content = typeof reply?.content === "string" ? reply.content : "";
         if (content) reportRef.current(content, runtimeAgentId);
+        const runId = activeRunIdRef.current;
+        if (runId) {
+          void transitionTaskRun(runId, "succeeded")
+            .catch(() => undefined)
+            .finally(() => {
+              activeRunIdRef.current = undefined;
+              setActiveRunId(undefined);
+              void queryClient.invalidateQueries({
+                queryKey: runKeys.channel(channel.id),
+              });
+            });
+        }
       },
     });
     return () => subscription?.unsubscribe();
-  }, [agent, runtimeAgentId]);
+  }, [agent, runtimeAgentId, queryClient, channel.id]);
+
+  // A live browser tab proves a running task has not been abandoned by a crashed client.
+  useEffect(() => {
+    if (!agent.isRunning || !activeRunId) return;
+    const heartbeat = window.setInterval(() => {
+      void transitionTaskRun(activeRunId, "running").catch(() => undefined);
+    }, 30_000);
+    return () => window.clearInterval(heartbeat);
+  }, [agent.isRunning, activeRunId]);
 
   /** Stable reference for effects and component callbacks. */
   const sayRef = useRef(say);
@@ -270,8 +433,13 @@ export function ChannelChat({
           setTimeout(resolve, SEND_WITHOUT_JOIN_AFTER_MS),
         ),
       ]);
+      const existingRunId = assignedRunRef.current;
+      assignedRunRef.current = undefined;
       await sayRef.current(
         typeof pending.content === "string" ? pending.content : "",
+        [],
+        undefined,
+        existingRunId,
       );
     })();
 
@@ -290,6 +458,16 @@ export function ChannelChat({
         messages={transcriptMessages(agent.messages, seed)}
         notice={
           <>
+            <TaskRunStatus
+              channelId={channel.id}
+              onRetry={(runId) => {
+                void sayRef.current(
+                  "Please retry the last request in this conversation.",
+                  [],
+                  runId,
+                );
+              }}
+            />
             {runError ? (
               <p
                 className="pb-2 text-sm text-destructive"
@@ -334,6 +512,18 @@ export function ChannelChat({
         onStop={() => {
           awaitingReply.current = false;
           copilotkit.stopAgent({ agent });
+          const runId = activeRunIdRef.current;
+          if (runId) {
+            void transitionTaskRun(runId, "cancelled")
+              .catch(() => undefined)
+              .finally(() => {
+                activeRunIdRef.current = undefined;
+                setActiveRunId(undefined);
+                void queryClient.invalidateQueries({
+                  queryKey: runKeys.channel(channel.id),
+                });
+              });
+          }
         }}
         pending={agent.isRunning}
       />

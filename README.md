@@ -114,7 +114,8 @@ A Bot is any endpoint speaking [AG-UI](https://github.com/ag-ui-protocol/ag-ui),
 | -------------------- | ------------------------------------------------------------------ |
 | `/`                  | Start and browse channels.                                         |
 | `/agents`            | Create, edit, duplicate, hide, delete, and launch coworkers.       |
-| `/channel/:id`       | Converse with one coworker and view its live screen/profile panel. |
+| `/channel/:id`       | Converse with one or more coworkers, select who answers, and view that Bot's live screen/profile panel. |
+| `/work`              | Run the durable queue, routines, handoffs, projects, integration recipes, notifications, and inspectable memory. |
 | `/bot`               | Direct chat with a Bot; `?agent=<id>` selects one.                 |
 | `/skills`            | Create and enable personal skills.                                 |
 | `/settings`          | User preferences.                                                  |
@@ -138,10 +139,13 @@ A Bot is any endpoint speaking [AG-UI](https://github.com/ag-ui-protocol/ag-ui),
 - **Components instead of prose**: compiled React components live in `app/src/components/gallery/`, sandboxed ones are authored in `/admin/playground` and published with no deployment. Every call asks the server whether the component exists, is published, and is not withheld from that Bot. Data functions are granted per component.
 - **Governed MCP**: a curated catalogue ships for Atlassian, Box, Slack, Salesforce and ServiceNow. Custom servers must pass URL checks, and any tool not positively classified as a read is treated as a write.
 - **Skills are instructions, not capabilities**: personal skills attach only to Bots their author owns, deployment skills are admin-owned, and both are invoked with `/` in the composer.
+- **Durable work control center**: `/work` combines queued and active runs, reusable manual/scheduled/webhook routines, user-to-Bot and Bot-to-Bot handoffs, shared project artifacts, and actionable notifications.
+- **Shared project teams**: assign several coworkers to a project, open one team channel, and explicitly choose which coworker answers each turn. Computers, credentials, and browser sessions remain isolated per Bot.
+- **Inspectable memory**: stable user, coworker, and project context is stored in PostgreSQL with scope, source, confidence, and pinning. People can inspect, edit, or remove it; relevant user and coworker memory is supplied to the active conversation.
 - **An audit trail you can read**: `/admin/audit` lists what was permitted, what was refused and what failed, and every refusal carries the rule that caused it.
 - **Credentials encrypted at rest**: stored through `/admin/credentials`, never returned by an API, and redacted from audit events.
 - **Loopback by default**: computers bind to `127.0.0.1` and require a per-container token, so nothing reaches a logged-in browser by knowing its port.
-- **Durable threads and memory**: conversations survive restarts through CopilotKit Intelligence, and each deployment stamps the threads it owns.
+- **Durable threads and governed context**: conversations survive restarts through CopilotKit Intelligence, while the inspectable memory and work records owned by this deployment stay in PostgreSQL.
 
 ## Bring your own agent
 
@@ -201,8 +205,8 @@ Full reference: [docs/configuration.md](docs/configuration.md).
 | `agent-bot`              | 4200                       | Proof-of-concept AG-UI Bot.                                                                          |
 | `agent-langgraph`        | 4201                       | LangGraph AG-UI Bot.                                                                             |
 | `supervisor`             | 4500 host / 4300 container | Creates and manages one computer per Bot.                                                        |
-| PostgreSQL with pgvector | 5432                       | Product data, policy, audit, credentials, grants, channels, knowledge, and component metadata.   |
-| CopilotKit Intelligence  | external                   | Durable threads and memory.                                                                      |
+| PostgreSQL with pgvector | 5432                       | Product data, policy, audit, credentials, grants, channels, work, inspectable memory, knowledge, and component metadata. |
+| CopilotKit Intelligence  | external                   | Durable conversation threads and realtime gateway.                                               |
 
 The server gateway is the product/API path for Bot browser and file tool calls.
 It resolves the target, evaluates policy, writes an audit row, and then calls

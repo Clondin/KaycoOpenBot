@@ -1,8 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import type { AuditEventInput, AuditStore } from "../src/audit";
+import type { ApprovalRequest, ApprovalService } from "../src/approvals/store";
 import type { ComputerClient } from "../src/computer/client";
 import {
   ActionRefusedError,
+  ApprovalRequiredError,
   createComputerGateway,
 } from "../src/computer/gateway";
 import type { ActionPolicy } from "../src/computer/policy";
@@ -103,13 +105,51 @@ function fakeAudit() {
 const ACTOR = { id: "dev-local-user" };
 const PERMISSIVE: ActionPolicy = { mode: "enforce", deny: [], allow: ["true"] };
 
-async function gatewayWith(policy: ActionPolicy | undefined) {
+const APPROVAL_REQUEST: ApprovalRequest = {
+  id: "approval-1",
+  runId: null,
+  channelId: null,
+  requestedForUserId: ACTOR.id,
+  decidedByUserId: null,
+  botId: "bot-1",
+  toolName: "computer_click",
+  policyRule: 'contains(element.name, "submit")',
+  title: "Click on a page",
+  summary: "Click on a page: Submit order",
+  details: [{ label: "Target", value: "Submit order" }],
+  status: "pending",
+  note: null,
+  expiresAt: new Date(Date.now() + 60_000),
+  decidedAt: null,
+  consumedAt: null,
+  createdAt: new Date(),
+  updatedAt: new Date(),
+};
+
+function fakeApprovals(
+  authorize: ApprovalService["authorize"],
+): ApprovalService {
+  return {
+    authorize,
+    get: async () => null,
+    list: async () => [],
+    decide: async () => {
+      throw new Error("not used");
+    },
+  };
+}
+
+async function gatewayWith(
+  policy: ActionPolicy | undefined,
+  approvals?: ApprovalService,
+) {
   const { client, calls } = fakeClient();
   const { store, rows } = fakeAudit();
   const gateway = createComputerGateway({
     client,
     auditStore: store,
     policy: () => policy,
+    ...(approvals ? { approvals } : {}),
   });
   // Every test acts on refs, so the server must hold a snapshot first, exactly as the real flow does.
   await gateway.snapshot("default");
@@ -143,6 +183,61 @@ describe("the computer gateway", () => {
     expect(calls).toEqual([]);
     expect(rows).toHaveLength(1);
     expect(rows[0]?.eventType).toBe("computer.action_refused");
+  });
+
+  test("an approval rule pauses before the computer and records the request", async () => {
+    const approvals = fakeApprovals(async () => ({
+      authorized: false,
+      request: APPROVAL_REQUEST,
+    }));
+    const { gateway, calls, rows } = await gatewayWith(
+      {
+        ...PERMISSIVE,
+        approve: ['contains(element.name, "submit")'],
+      },
+      approvals,
+    );
+
+    const error = await gateway
+      .click("default", "bot-1", ACTOR, { ref: "e9", snapshotId: 7 })
+      .catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(ApprovalRequiredError);
+    expect((error as ApprovalRequiredError).request.id).toBe("approval-1");
+    expect(calls).toEqual([]);
+    expect(rows[0]?.eventType).toBe("computer.action_approval_required");
+    const decision = rows[0]?.payload.decision as
+      | { approvalId?: string }
+      | undefined;
+    expect(decision?.approvalId).toBe("approval-1");
+  });
+
+  test("a consumed exact approval carries out the action and records its id", async () => {
+    const approvals = fakeApprovals(async () => ({
+      authorized: true,
+      approvalId: "approval-1",
+    }));
+    const { gateway, calls, rows } = await gatewayWith(
+      {
+        ...PERMISSIVE,
+        approve: ['contains(element.name, "submit")'],
+      },
+      approvals,
+    );
+
+    await gateway.click(
+      "default",
+      "bot-1",
+      { ...ACTOR, approvalId: "approval-1" },
+      { ref: "e9", snapshotId: 7 },
+    );
+
+    expect(calls).toEqual(["click"]);
+    expect(rows[0]?.eventType).toBe("computer.action_allowed");
+    const decision = rows[0]?.payload.decision as
+      | { approvalId?: string }
+      | undefined;
+    expect(decision?.approvalId).toBe("approval-1");
   });
 
   test("the refusal names the rule, so an operator can find it", async () => {

@@ -3,10 +3,12 @@ import type { ReactNode } from "react";
 import { apiUrl } from "../api-origin";
 import { deploymentPreviewEnabled } from "../deployment-preview";
 import { ActiveBotProvider } from "./active-bot";
+import { ActiveRunProvider } from "./active-run";
 import { ComputerTools } from "./computer-tools";
 import { GalleryTools } from "./gallery-tools";
 import { PluginTools } from "./plugin-tools";
 import { SandboxedTools } from "./sandboxed-tools";
+import { WorkTools } from "./work-tools";
 
 /**
  * The CopilotKit client, wrapped once for the whole authenticated app.
@@ -34,14 +36,18 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
     >
       {/* Computer tools target the Bot declared by the mounted surface. */}
       <ActiveBotProvider>
-        <ComputerTools />
-        {/* Gallery tools are registered once; their handlers re-read the active Bot to avoid shadowing renderers. */}
-        <GalleryTools />
-        {/* MCP tools share the same active-Bot context and server-side grant checks. */}
-        <PluginTools />
-        {/* Browser-authored components use the same component grants as the compiled gallery. */}
-        <SandboxedTools />
-        {children}
+        <ActiveRunProvider>
+          <ComputerTools />
+          {/* Gallery tools are registered once; their handlers re-read the active Bot to avoid shadowing renderers. */}
+          <GalleryTools />
+          {/* MCP tools share the same active-Bot context and server-side grant checks. */}
+          <PluginTools />
+          {/* Browser-authored components use the same component grants as the compiled gallery. */}
+          <SandboxedTools />
+          {/* Durable handoffs, project artifacts, and inspectable memory. */}
+          <WorkTools />
+          {children}
+        </ActiveRunProvider>
       </ActiveBotProvider>
     </CopilotKitProvider>
   );

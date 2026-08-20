@@ -51,7 +51,10 @@ import {
   createCredentialMutationOptions,
   revokeCredentialMutationOptions,
 } from "@/lib/credentials/mutations";
-import { credentialListQueryOptions } from "@/lib/credentials/queries";
+import {
+  credentialListQueryOptions,
+  modelStatusQueryOptions,
+} from "@/lib/credentials/queries";
 
 export const Route = createFileRoute("/_authed/admin/credentials")({
   component: CredentialsPage,
@@ -61,6 +64,7 @@ function CredentialsPage() {
   const [adding, setAdding] = useState(false);
   const queryClient = useQueryClient();
   const credentials = useQuery(credentialListQueryOptions());
+  const modelStatus = useQuery(modelStatusQueryOptions());
   const createCredential = useMutation(
     createCredentialMutationOptions(queryClient),
   );
@@ -82,6 +86,15 @@ function CredentialsPage() {
       setAdding(false);
     },
   });
+  const configureActiveModel = () => {
+    const model = modelStatus.data;
+    if (!model) return;
+    form.setFieldValue("kind", "model");
+    form.setFieldValue("provider", model.provider);
+    form.setFieldValue("keyId", model.keyId);
+    form.setFieldValue("plaintext", "");
+    setAdding(true);
+  };
 
   return (
     <PageShell
@@ -264,6 +277,39 @@ function CredentialsPage() {
           </form>
         </DialogContent>
       </Dialog>
+
+      <PageSection title="Active model">
+        {modelStatus.isPending ? (
+          <PageEmpty>Checking model configuration…</PageEmpty>
+        ) : modelStatus.error ? (
+          <p className="mt-4 text-destructive text-sm" role="alert">
+            Could not load the active model configuration.
+          </p>
+        ) : modelStatus.data ? (
+          <Item size="sm">
+            <ItemContent>
+              <ItemTitle>
+                {modelStatus.data.model} · {modelStatus.data.provider}
+              </ItemTitle>
+              <ItemDescription>
+                Credential {modelStatus.data.keyId} ·{" "}
+                {modelStatus.data.configured ? "ready" : "key not configured"}
+              </ItemDescription>
+            </ItemContent>
+            {!modelStatus.data.configured ? (
+              <ItemActions>
+                <Button
+                  onClick={configureActiveModel}
+                  size="sm"
+                  variant="outline"
+                >
+                  Configure
+                </Button>
+              </ItemActions>
+            ) : null}
+          </Item>
+        ) : null}
+      </PageSection>
 
       <PageSection title="Configured credentials">
         {credentials.isPending ? (

@@ -2,7 +2,9 @@ import { describe, expect, test } from "bun:test";
 import {
   createComputerClient,
   ElementNotFoundError,
+  HumanControlError,
   NavigationRefusedError,
+  StaleSnapshotError,
 } from "../src/computer/client";
 
 function clientWith(
@@ -12,6 +14,7 @@ function clientWith(
   return createComputerClient({
     baseUrl: "http://agent-computer:4100",
     allowPrivateHosts,
+    safeRetryDelaysMs: [0, 0],
     fetchImpl: ((url: string, init?: RequestInit) =>
       Promise.resolve(handler(url, init))) as unknown as typeof fetch,
   });
@@ -153,6 +156,66 @@ describe("computer client", () => {
       state: "unreachable",
       reason: "The assistant's computer did not respond in time.",
     });
+  });
+
+  test("retries observation calls after a transient connection failure", async () => {
+    let calls = 0;
+    const client = clientWith(() => {
+      calls += 1;
+      if (calls === 1) throw new Error("connection reset");
+      return ok({
+        url: "https://example.com",
+        title: "Example",
+        text: "ready",
+      });
+    });
+
+    await expect(client.read()).resolves.toMatchObject({ text: "ready" });
+    expect(calls).toBe(2);
+  });
+
+  test("never retries an acting call whose outcome may already have happened", async () => {
+    let calls = 0;
+    const client = clientWith(() => {
+      calls += 1;
+      throw new Error("connection reset after dispatch");
+    });
+
+    await expect(
+      client.click({ ref: "e1", snapshotId: 1 }),
+    ).rejects.toBeDefined();
+    expect(calls).toBe(1);
+  });
+
+  test("keeps human control distinct from stale element refs", async () => {
+    const human = clientWith(
+      () =>
+        new Response(
+          JSON.stringify({
+            error: "A person has control.",
+            code: "human_control",
+            humanHasControl: true,
+          }),
+          { status: 423 },
+        ),
+    );
+    await expect(
+      human.click({ ref: "e1", snapshotId: 1 }),
+    ).rejects.toBeInstanceOf(HumanControlError);
+
+    const stale = clientWith(
+      () =>
+        new Response(
+          JSON.stringify({
+            error: "Take a new snapshot.",
+            code: "stale_snapshot",
+          }),
+          { status: 409 },
+        ),
+    );
+    await expect(
+      stale.click({ ref: "e1", snapshotId: 1 }),
+    ).rejects.toBeInstanceOf(StaleSnapshotError);
   });
 });
 

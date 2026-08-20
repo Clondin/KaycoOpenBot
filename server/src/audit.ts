@@ -42,11 +42,17 @@ export const auditEventTypes = [
   "knowledge.searched",
   "agent.invoked",
   "mcp.call_succeeded",
+  "mcp.call_allowed",
   "mcp.call_rejected",
+  "mcp.call_approval_required",
+  "mcp.call_failed",
   // Every action a Bot takes on its computer, allowed or refused. Both, always: a trail that records
   // only what was permitted cannot answer whether the Bot tried.
   "computer.action_allowed",
   "computer.action_refused",
+  // The policy matched a rule that requires a person, and the exact server-resolved action is now
+  // waiting. Separate from refused: this action can proceed after a recorded approval.
+  "computer.action_approval_required",
   // Permitted by policy, attempted, and did not succeed. Its own type because "allowed" reads as
   // "happened", and a trail that cannot tell those apart misleads exactly when it matters most.
   "computer.action_failed",
@@ -104,6 +110,23 @@ export const auditEventTypes = [
    * there was, and it is not a control, nothing here is enforced by it.
    */
   "bot.declined",
+
+  // Durable work and the decisions that unblock it.
+  "task.created",
+  "task.retried",
+  "task.status_changed",
+  "approval.requested",
+  "approval.approved",
+  "approval.declined",
+  "approval.expired",
+  "approval.consumed",
+
+  // Persistent organization work around individual task attempts.
+  "project.created",
+  "routine.created",
+  "routine.dispatched",
+  "delegation.created",
+  "memory.created",
 
   /*
    * What a Bot may answer with, decided per Bot and recorded like anything else it is trusted with.

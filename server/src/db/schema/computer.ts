@@ -26,6 +26,7 @@ export const actionPolicy = pgTable("action_policy", {
   /** `enforce` or `dry-run`. Not an enum: the policy module owns that vocabulary. */
   mode: text("mode").notNull(),
   deny: text("deny").array().notNull(),
+  approve: text("approve").array().notNull().default([]),
   allow: text("allow").array().notNull(),
   /** Who last changed it, for the Admin page and the trail. */
   updatedBy: text("updated_by"),

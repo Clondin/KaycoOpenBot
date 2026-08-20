@@ -1,0 +1,80 @@
+cases:
+  - id: explicit-allow
+    policy: { mode: enforce, deny: [], approve: [], allow: ["true"] }
+    context: &submit
+      tool: { name: computer_click }
+      bot: { id: operations }
+      actor: { id: user-1 }
+      page: { url: "https://expenses.example.com/new", host: expenses.example.com }
+      element: { ref: e9, role: button, name: Submit expense }
+      intent: activate
+    expected: { source: allow, forward: true, approvalRequired: false }
+
+  - id: submit-needs-approval
+    policy:
+      mode: enforce
+      deny: []
+      approve: ['intent == "activate" && contains(element.name, "submit")']
+      allow: ["true"]
+    context: *submit
+    expected: { source: approve, forward: false, approvalRequired: true }
+
+  - id: deny-beats-approval
+    policy:
+      mode: enforce
+      deny: ['page.host == "expenses.example.com"']
+      approve: ['contains(element.name, "submit")']
+      allow: ["true"]
+    context: *submit
+    expected: { source: deny, forward: false, approvalRequired: false }
+
+  - id: dry-run-approval-observes-without-pausing
+    policy:
+      mode: dry-run
+      deny: []
+      approve: ['contains(element.name, "submit")']
+      allow: ["true"]
+    context: *submit
+    expected: { source: approve, forward: true, approvalRequired: true }
+
+  - id: missing-allow-fails-closed
+    policy: { mode: enforce, deny: [], approve: [], allow: [] }
+    context: *submit
+    expected: { source: default, forward: false, approvalRequired: false }
+
+  - id: broken-deny-fails-closed
+    policy:
+      mode: enforce
+      deny: ["this is not ( valid cel"]
+      approve: []
+      allow: ["true"]
+    context: *submit
+    expected: { source: deny, forward: false, approvalRequired: false }
+
+  - id: external-write-needs-approval
+    policy:
+      mode: enforce
+      deny: []
+      approve: ['mcp.effect == "write"']
+      allow: ["true"]
+    context:
+      tool: { name: mcp__slack__slack_send_message }
+      bot: { id: operations }
+      actor: { id: user-1 }
+      page: { url: "", host: "" }
+      mcp: { server: slack, tool: slack_send_message, effect: write }
+    expected: { source: approve, forward: false, approvalRequired: true }
+
+  - id: external-read-is-allowed
+    policy:
+      mode: enforce
+      deny: []
+      approve: ['mcp.effect == "write"']
+      allow: ["true"]
+    context:
+      tool: { name: mcp__slack__slack_search }
+      bot: { id: operations }
+      actor: { id: user-1 }
+      page: { url: "", host: "" }
+      mcp: { server: slack, tool: slack_search, effect: read }
+    expected: { source: allow, forward: true, approvalRequired: false }

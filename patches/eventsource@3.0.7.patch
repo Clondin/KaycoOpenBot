@@ -1,0 +1,16 @@
+diff --git a/package.json b/package.json
+index 351e4e135068ea7611fa3f5f025b7a4a90b886bf..3195f348ac4b2e075b859e55715953afcbf5004f 100644
+--- a/package.json
++++ b/package.json
+@@ -10,10 +10,10 @@
+   "exports": {
+     ".": {
+       "deno": "./dist/index.js",
+-      "bun": "./dist/index.js",
+       "source": "./src/index.ts",
+       "import": "./dist/index.js",
+       "require": "./dist/index.cjs",
++      "bun": "./dist/index.js",
+       "default": "./dist/index.js"
+     },
+     "./package.json": "./package.json"

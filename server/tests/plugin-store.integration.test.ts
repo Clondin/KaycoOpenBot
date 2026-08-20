@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { createAuditStore } from "../src/audit";
+import type { ApprovalRequest, ApprovalService } from "../src/approvals/store";
 import type { ActionPolicy } from "../src/computer/policy";
 import { createDatabase } from "../src/db/client";
 import { TEST_POOL } from "./support/database";
@@ -12,7 +13,11 @@ import {
   mcpTools,
   pluginGrants,
 } from "../src/db/schema";
-import { createPluginStore, PluginRefusedError } from "../src/plugins/store";
+import {
+  createPluginStore,
+  PluginApprovalRequiredError,
+  PluginRefusedError,
+} from "../src/plugins/store";
 
 /**
  * The two questions a tool call has to pass, and the row each answer leaves behind.
@@ -237,6 +242,83 @@ describe("the policy is asked as well as the grant", () => {
     }
 
     expect(thrown).not.toBeInstanceOf(PluginRefusedError);
+  });
+
+  test("approval binds to the canonical hash of the exact tool arguments", async () => {
+    await store.grant("mcp", ref, holderId, "admin@openbot.local");
+    const hashes: string[] = [];
+    let requestNumber = 0;
+    const approvals: ApprovalService = {
+      authorize: async (input) => {
+        hashes.push(input.context.mcp?.argumentsHash ?? "");
+        requestNumber += 1;
+        const now = new Date();
+        const request: ApprovalRequest = {
+          id: `approval-${requestNumber}`,
+          runId: null,
+          channelId: null,
+          requestedForUserId: input.actor.id,
+          decidedByUserId: null,
+          botId: input.botId,
+          toolName: input.toolName,
+          policyRule: input.policyRule,
+          title: "Approve tool call",
+          summary: "This tool call needs approval.",
+          details: [],
+          status: "pending",
+          note: null,
+          expiresAt: new Date(now.getTime() + 60_000),
+          decidedAt: null,
+          consumedAt: null,
+          createdAt: now,
+          updatedAt: now,
+        };
+        return { authorized: false, request };
+      },
+      get: async () => null,
+      list: async () => [],
+      decide: async () => {
+        throw new Error("not used");
+      },
+    };
+    const approvalStore = createPluginStore({
+      database,
+      auditStore: createAuditStore(database),
+      credentials: { readSecret: async () => null },
+      encryptionKey: "x".repeat(44),
+      policy: () => policy,
+      approvals,
+    });
+    policy = {
+      mode: "enforce",
+      deny: [],
+      approve: ['mcp.effect == "read"'],
+      allow: ["true"],
+    };
+
+    try {
+      for (const args of [
+        { query: "open incidents", limit: 10 },
+        { limit: 10, query: "open incidents" },
+        { query: "closed incidents", limit: 10 },
+      ]) {
+        await expect(
+          approvalStore.callTool({
+            ref,
+            args,
+            botId: holderId,
+            actorId: "user-1",
+          }),
+        ).rejects.toBeInstanceOf(PluginApprovalRequiredError);
+      }
+    } finally {
+      policy = { mode: "enforce", deny: [], allow: ["true"] };
+    }
+
+    expect(hashes).toHaveLength(3);
+    expect(hashes[0]).toBe(hashes[1]);
+    expect(hashes[0]).not.toBe(hashes[2]);
+    expect(hashes.every((hash) => /^[a-f0-9]{64}$/.test(hash))).toBe(true);
   });
 });
 

@@ -2,10 +2,12 @@ import type { MiddlewareHandler } from "hono";
 import { Hono } from "hono";
 import type { AppVariables } from "../auth/guards";
 import { requireAdmin } from "../auth/guards";
+import { ApprovalContextError } from "../approvals/store";
 import { CATALOGUE } from "./catalogue";
 import {
   CatalogueEntryUnknownError,
   CustomServerRefusedError,
+  PluginApprovalRequiredError,
   PluginRefusedError,
   type PluginStore,
 } from "./store";
@@ -358,10 +360,46 @@ export function createPluginRoutes(
         ref: body.ref,
         args: body.args ?? {},
         botId: body.agentId,
-        actorId: actorEmail(context),
+        actorId: context.var.actor.id,
+        actorRole: context.var.actor.role,
+        ...(headerId(context, "X-OpenBot-Run-Id")
+          ? { runId: headerId(context, "X-OpenBot-Run-Id") }
+          : {}),
+        ...(headerId(context, "X-OpenBot-Channel-Id")
+          ? { channelId: headerId(context, "X-OpenBot-Channel-Id") }
+          : {}),
+        ...(headerId(context, "X-OpenBot-Approval-Id")
+          ? { approvalId: headerId(context, "X-OpenBot-Approval-Id") }
+          : {}),
       });
       return context.json(result);
     } catch (error) {
+      if (error instanceof PluginApprovalRequiredError) {
+        const request = error.request;
+        return context.json(
+          {
+            error: error.message,
+            approvalRequired: true,
+            approval: {
+              id: request.id,
+              runId: request.runId,
+              channelId: request.channelId,
+              botId: request.botId,
+              toolName: request.toolName,
+              title: request.title,
+              summary: request.summary,
+              details: request.details,
+              status: request.status,
+              expiresAt: request.expiresAt.toISOString(),
+              createdAt: request.createdAt.toISOString(),
+            },
+          },
+          428,
+        );
+      }
+      if (error instanceof ApprovalContextError) {
+        return context.json({ error: error.message }, 409);
+      }
       if (error instanceof PluginRefusedError) {
         return context.json({ error: error.message, rule: error.rule }, 403);
       }
@@ -384,4 +422,12 @@ export function createPluginRoutes(
   });
 
   return routes;
+}
+
+function headerId(
+  context: { req: { header(name: string): string | undefined } },
+  name: string,
+) {
+  const value = context.req.header(name)?.trim();
+  return value && value.length <= 200 ? value : undefined;
 }

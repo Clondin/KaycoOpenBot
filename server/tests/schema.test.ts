@@ -7,20 +7,34 @@ import {
   agentPreferences,
   agentProfiles,
   agents,
+  approvalRequests,
   agentVisibility,
   auditEvents,
   channelAgents,
   channelMemberships,
   channels,
   chunks,
+  codexThreadMappings,
   connectorCursors,
   connectorInstances,
   credentials,
+  delegationMessages,
+  delegations,
   documentAcls,
   documents,
   intelligenceChannelMappings,
+  memoryEntries,
+  notifications,
+  projectAgents,
+  projectArtifacts,
+  projectMembers,
+  projects,
+  routineDispatches,
+  routines,
   sessions,
   syncRuns,
+  taskRunEvents,
+  taskRuns,
   userRoles,
   users,
   verifications,
@@ -45,9 +59,13 @@ describe("OpenBot database schema", () => {
         syncRuns,
         documents,
         chunks,
+        codexThreadMappings,
         documentAcls,
         auditEvents,
         intelligenceChannelMappings,
+        taskRuns,
+        taskRunEvents,
+        approvalRequests,
       ].map(getTableName),
     ).toEqual([
       "users",
@@ -65,10 +83,62 @@ describe("OpenBot database schema", () => {
       "sync_runs",
       "documents",
       "chunks",
+      "codex_thread_mappings",
       "document_acls",
       "audit_events",
       "intelligence_channel_mappings",
+      "task_runs",
+      "task_run_events",
+      "approval_requests",
     ]);
+  });
+
+  test("defines durable shared work and inspectable memory records", () => {
+    expect(
+      [
+        projects,
+        projectMembers,
+        projectAgents,
+        projectArtifacts,
+        routines,
+        routineDispatches,
+        delegations,
+        delegationMessages,
+        memoryEntries,
+        notifications,
+      ].map(getTableName),
+    ).toEqual([
+      "projects",
+      "project_members",
+      "project_agents",
+      "project_artifacts",
+      "routines",
+      "routine_dispatches",
+      "delegations",
+      "delegation_messages",
+      "memory_entries",
+      "notifications",
+    ]);
+
+    expect(Object.keys(routines)).toEqual(
+      expect.arrayContaining([
+        "agentId",
+        "channelId",
+        "trigger",
+        "schedule",
+        "webhookTokenHash",
+        "nextRunAt",
+      ]),
+    );
+    expect(Object.keys(memoryEntries)).toEqual(
+      expect.arrayContaining([
+        "ownerUserId",
+        "scope",
+        "kind",
+        "confidence",
+        "pinned",
+      ]),
+    );
   });
 
   test("keeps document embeddings and ACLs separate from document metadata", () => {
@@ -95,6 +165,18 @@ describe("OpenBot database schema", () => {
     );
     expect(Object.keys(accounts)).toEqual(
       expect.arrayContaining(["userId", "providerId", "accountId"]),
+    );
+  });
+
+  test("maps each user's Intelligence threads to isolated Codex threads", async () => {
+    expect(getTableName(codexThreadMappings)).toBe("codex_thread_mappings");
+    const migration = await readFile(
+      new URL("../drizzle/0003_codex_thread_mappings.sql", import.meta.url),
+      "utf8",
+    );
+    expect(migration).toContain('CREATE TABLE "codex_thread_mappings"');
+    expect(migration).toContain(
+      'PRIMARY KEY("user_id","agent_id","intelligence_thread_id")',
     );
   });
 

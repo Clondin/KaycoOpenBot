@@ -2,6 +2,7 @@ import type {
   ConnectorAdapter,
   ConnectorChange,
 } from "../../server/src/connectors/contract";
+import { validateConnectorBatch } from "../../server/src/connectors/contract";
 
 export type ConnectorPersistence = {
   cursor: () => Promise<string | null>;
@@ -20,10 +21,13 @@ export async function runConnector(
   mode: "sync" | "reconcile" = "sync",
 ) {
   try {
-    const discovered = await adapter.discover({
-      cursor: await persistence.cursor(),
-      mode,
-    });
+    const cursor = await persistence.cursor();
+    const discovered = validateConnectorBatch(
+      await adapter.discover({
+        cursor,
+        mode,
+      }),
+    );
     if (persistence.persistBatch) {
       await persistence.persistBatch(discovered.changes, discovered.nextCursor);
     } else {

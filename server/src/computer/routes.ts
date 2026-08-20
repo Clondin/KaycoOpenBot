@@ -2,10 +2,12 @@ import type { Context, MiddlewareHandler } from "hono";
 import { Hono } from "hono";
 import type { AppVariables } from "../auth/guards";
 import { requireAdmin } from "../auth/guards";
+import { ApprovalContextError } from "../approvals/store";
 import {
   type ComputerClient,
   ComputerUnavailableError,
   ElementNotFoundError,
+  HumanControlError,
   NavigationRefusedError,
   StaleSnapshotError,
   WorkspaceRefusedError,
@@ -14,6 +16,7 @@ import {
 import {
   type ActionActor,
   ActionRefusedError,
+  ApprovalRequiredError,
   type ComputerGateway,
 } from "./gateway";
 import { type PolicyStore, parseActionPolicy } from "./policy-store";
@@ -72,16 +75,14 @@ export function createComputerRoutes(
         await gateway.navigate(
           context.req.param("botId") ?? "default",
           context.req.param("botId") ?? "default",
-          {
-            id: context.var.actor.id,
-            ...(context.var.actor.email === DEV_ACTOR_EMAIL
-              ? {}
-              : { userId: context.var.actor.id }),
-          },
+          actionActor(context),
           body.url.trim(),
         ),
       );
     } catch (error) {
+      if (error instanceof ApprovalRequiredError) {
+        return approvalRequired(context, error);
+      }
       if (error instanceof ActionRefusedError) {
         return context.json({ error: error.message, rule: error.rule }, 403);
       }
@@ -416,7 +417,6 @@ async function act(
   // helper is typed against a generic context that cannot know that, and a thrown "undefined bot"
   // would be a worse outcome than naming the one shared computer.
   const botId = context.req.param("botId") ?? "default";
-  const record = context.var.actor;
   const body = (await context.req.json().catch(() => null)) as Record<
     string,
     unknown
@@ -425,13 +425,7 @@ async function act(
   try {
     const result = await handler(
       botId,
-      {
-        id: record.id,
-        // Only a real users row may go in the audit table's foreign key column. The local development
-        // actor is not one, so writing it there fails the constraint and loses the row entirely. Who
-        // it was is recorded in the payload regardless. See gateway.ts.
-        ...(record.email === DEV_ACTOR_EMAIL ? {} : { userId: record.id }),
-      },
+      actionActor(context),
       body,
       context.req.raw.signal,
     );
@@ -440,6 +434,12 @@ async function act(
     }
     return context.json(result as Record<string, unknown>);
   } catch (error) {
+    if (error instanceof ApprovalRequiredError) {
+      return approvalRequired(context, error);
+    }
+    if (error instanceof ApprovalContextError) {
+      return context.json({ error: error.message }, 409);
+    }
     // A policy refusal is the product working. 403 with the rule that refused it, so the surface can
     // tell the person which boundary they met rather than reporting a malfunction.
     if (error instanceof ActionRefusedError) {
@@ -456,8 +456,70 @@ async function act(
     if (error instanceof WorkspaceRequestError) {
       return context.json({ error: error.message }, 400);
     }
+    if (error instanceof HumanControlError) {
+      return context.json(
+        {
+          error: error.message,
+          code: "human_control",
+          humanHasControl: true,
+        },
+        423,
+      );
+    }
     return context.json({ error: describe(error) }, statusFor(error));
   }
+}
+
+function actionActor(context: ComputerContext): ActionActor {
+  const record = context.var.actor;
+  return {
+    id: record.id,
+    role: record.role,
+    // Only a real users row may go in audit's attribution column. The local development actor is
+    // deliberately synthetic, so its id stays in the payload instead.
+    ...(record.email === DEV_ACTOR_EMAIL ? {} : { userId: record.id }),
+    ...(headerId(context, "X-OpenBot-Run-Id")
+      ? { runId: headerId(context, "X-OpenBot-Run-Id") }
+      : {}),
+    ...(headerId(context, "X-OpenBot-Channel-Id")
+      ? { channelId: headerId(context, "X-OpenBot-Channel-Id") }
+      : {}),
+    ...(headerId(context, "X-OpenBot-Approval-Id")
+      ? { approvalId: headerId(context, "X-OpenBot-Approval-Id") }
+      : {}),
+  };
+}
+
+function headerId(context: ComputerContext, name: string) {
+  const value = context.req.header(name)?.trim();
+  return value && value.length <= 200 ? value : undefined;
+}
+
+function approvalRequired(
+  context: ComputerContext,
+  error: ApprovalRequiredError,
+) {
+  const request = error.request;
+  return context.json(
+    {
+      error: error.message,
+      approvalRequired: true,
+      approval: {
+        id: request.id,
+        runId: request.runId,
+        channelId: request.channelId,
+        botId: request.botId,
+        toolName: request.toolName,
+        title: request.title,
+        summary: request.summary,
+        details: request.details,
+        status: request.status,
+        expiresAt: request.expiresAt.toISOString(),
+        createdAt: request.createdAt.toISOString(),
+      },
+    },
+    428,
+  );
 }
 
 /**
@@ -496,12 +558,13 @@ function describe(error: unknown): string {
  * not running (an operator fixes it), the refs are stale (the model fixes it by snapshotting again),
  * and everything else. Navigation established this; the acting routes follow it.
  */
-function statusFor(error: unknown): 409 | 500 | 503 {
+function statusFor(error: unknown): 409 | 423 | 500 | 503 {
   if (error instanceof StaleSnapshotError) return 409;
   // The same answer as a stale snapshot, because it is the same instruction: the refs are wrong, take
   // another snapshot. Not 503, which says the computer is unavailable and sends an operator hunting a
   // container that is running perfectly.
   if (error instanceof ElementNotFoundError) return 409;
+  if (error instanceof HumanControlError) return 423;
   // A person holding the wheel, or a person driving before taking it. Nothing is broken; the caller
   // has to wait or take control first, and 409 is how both of those are already reported.
   if (

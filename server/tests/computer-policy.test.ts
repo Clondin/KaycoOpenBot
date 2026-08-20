@@ -110,6 +110,48 @@ describe("evaluateActionPolicy", () => {
     expect(decision.forward).toBe(true);
   });
 
+  test("an approval rule pauses an enforcing action before an allow rule", () => {
+    const decision = evaluateActionPolicy(
+      {
+        ...permissive,
+        approve: ['contains(element.name, "submit")'],
+      },
+      context(),
+    );
+    expect(decision.allowed).toBe(false);
+    expect(decision.forward).toBe(false);
+    expect(decision.approvalRequired).toBe(true);
+    expect(decision.source).toBe("approve");
+  });
+
+  test("deny beats approval", () => {
+    const decision = evaluateActionPolicy(
+      {
+        ...permissive,
+        deny: ['contains(element.name, "submit")'],
+        approve: ['contains(element.name, "submit")'],
+      },
+      context(),
+    );
+    expect(decision.source).toBe("deny");
+    expect(decision.approvalRequired).toBe(false);
+  });
+
+  test("dry-run reports approval without pausing the action", () => {
+    const decision = evaluateActionPolicy(
+      {
+        mode: "dry-run",
+        deny: [],
+        approve: ['contains(element.name, "submit")'],
+        allow: ["true"],
+      },
+      context(),
+    );
+    expect(decision.source).toBe("approve");
+    expect(decision.approvalRequired).toBe(true);
+    expect(decision.forward).toBe(true);
+  });
+
   test("rules can be written against the tool, the host and the Bot", () => {
     const byTool = evaluateActionPolicy(
       { ...permissive, deny: ['tool.name == "computer_type"'] },
@@ -160,6 +202,7 @@ describe("parseActionPolicy", () => {
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.policy.deny).toEqual([]);
+      expect(result.policy.approve).toEqual([]);
       expect(result.policy.allow).toEqual([]);
     }
   });

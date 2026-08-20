@@ -33,6 +33,7 @@ export function seedMessage(text: string, id: string): Message {
  * is in the thread and arrives through the normal replay.
  */
 const firstMessages = new Map<string, string>();
+const assignedWork = new Map<string, { text: string; runId: string }>();
 
 export function stashFirstMessage(channelId: string, text: string): void {
   firstMessages.set(channelId, text);
@@ -43,4 +44,21 @@ export function takeFirstMessage(channelId: string): string | null {
   const text = firstMessages.get(channelId) ?? null;
   firstMessages.delete(channelId);
   return text;
+}
+
+/** Queue-owned work opened from the Work page, carrying the durable run it must continue. */
+export function stashAssignedWork(
+  channelId: string,
+  text: string,
+  runId: string,
+): void {
+  assignedWork.set(channelId, { text, runId });
+}
+
+export function takeAssignedWork(
+  channelId: string,
+): { text: string; runId: string } | null {
+  const work = assignedWork.get(channelId) ?? null;
+  assignedWork.delete(channelId);
+  return work;
 }

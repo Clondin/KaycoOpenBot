@@ -12,11 +12,21 @@ import { ComputerView } from "@/components/computer/computer-view";
 import { useNeedsYou } from "@/components/computer/needs-you";
 import { DetailPanel } from "@/components/layout/detail-panel";
 import { Button } from "@/components/ui/button";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { agentListQueryOptions } from "@/lib/agents/queries";
 import { type AgentChannel, channelQueryOptions } from "@/lib/channels/queries";
 import { onComputerActivity } from "@/lib/copilot/computer-activity";
 import { deploymentPreviewEnabled } from "@/lib/deployment-preview";
 
 const chatSearchSchema = z.object({
+  /** Selects which coworker answers in a shared team channel. */
+  agent: z.string().optional(),
   settings: z.boolean().optional(),
   /** Opens the Bot's screen in the shared detail pane. */
   watch: z.boolean().optional(),
@@ -56,14 +66,19 @@ function ComputerViewPanel({
 
 function RouteComponent() {
   const { channelId } = Route.useParams();
-  const { settings, watch } = Route.useSearch();
+  const { agent, settings, watch } = Route.useSearch();
   const channel = useQuery(channelQueryOptions(channelId));
+  const profiles = useQuery(agentListQueryOptions());
   const navigate = Route.useNavigate();
   const isSettingsOpen = settings === true;
   const prefersReducedMotion = useReducedMotion();
   const isWatching = watch === true;
-  /** Channel routing currently supports one coworker. */
-  const agentId = channel.data?.agentIds[0];
+  const agentId = channel.data?.agentIds.includes(agent ?? "")
+    ? agent
+    : channel.data?.agentIds[0];
+  const agentName = profiles.data?.find(
+    (profile) => profile.id === agentId,
+  )?.name;
   /** Needs-you state is rendered by the screen when the screen is already open. */
   const needsYou = useNeedsYou(
     agentId,
@@ -116,7 +131,7 @@ function RouteComponent() {
       detail={
         agentId === undefined ? null : isWatching ? (
           // Manual watch remains active even when there is no current browser action.
-          <ComputerViewPanel agentId={agentId} name={channel?.data?.name} />
+          <ComputerViewPanel agentId={agentId} name={agentName} />
         ) : (
           <AgentProfile agentId={agentId} />
         )
@@ -163,6 +178,36 @@ function RouteComponent() {
             </motion.span>
           </div>
           <div className="flex flex-row gap-1.5">
+            {(channel.data?.agentIds.length ?? 0) > 1 ? (
+              <Select
+                onValueChange={(next) =>
+                  void navigate({
+                    replace: true,
+                    search: (previous) => ({
+                      ...previous,
+                      agent: next ?? undefined,
+                    }),
+                  })
+                }
+                value={agentId}
+              >
+                <SelectTrigger
+                  aria-label="Speaking coworker"
+                  className="max-w-40"
+                  size="sm"
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent align="end">
+                  {channel.data?.agentIds.map((id) => (
+                    <SelectItem key={id} value={id}>
+                      {profiles.data?.find((profile) => profile.id === id)
+                        ?.name ?? "Coworker"}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : null}
             <Button
               aria-label={
                 deploymentPreviewEnabled
@@ -199,6 +244,7 @@ function RouteComponent() {
         </div>
       </div>
       <ChannelBody
+        agentId={agentId}
         channel={channel.data}
         isPending={channel.isPending}
         hasError={Boolean(channel.error)}
@@ -207,15 +253,13 @@ function RouteComponent() {
   );
 }
 
-/**
- * A channel holds exactly one coworker. More than one is not supported yet, and rendering a shared
- * transcript for several agents before the runtime can route between them would look like it works.
- */
 function ChannelBody({
+  agentId,
   channel,
   isPending,
   hasError,
 }: {
+  agentId: string | undefined;
   channel: AgentChannel | undefined;
   isPending: boolean;
   hasError: boolean;
@@ -233,12 +277,11 @@ function ChannelBody({
     );
   }
 
-  const runtimeAgentId =
-    channel.agentIds.length === 1 ? channel.agentIds[0] : undefined;
+  const runtimeAgentId = agentId;
   if (!runtimeAgentId) {
     return (
       <p className="p-8 text-sm text-muted-foreground">
-        This channel has more than one coworker, which is not supported yet.
+        This channel does not have an available coworker.
       </p>
     );
   }

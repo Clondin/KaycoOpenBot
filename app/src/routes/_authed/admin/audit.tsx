@@ -38,7 +38,10 @@ const FILTERS = [
     search:
       "?eventType=computer.action_refused,mcp.call_rejected,component.refused,component.function_refused",
   },
-  { label: "Did not happen", search: "?eventType=computer.action_failed" },
+  {
+    label: "Did not happen",
+    search: "?eventType=computer.action_failed,mcp.call_failed",
+  },
 ] as const;
 
 function AuditPage() {
@@ -127,6 +130,7 @@ function Row({
     mode?: string;
     rule?: string | null;
     carriedOut?: boolean;
+    willAttempt?: boolean;
   };
   const element = payload.element as
     | { role?: string; name?: string }
@@ -138,7 +142,9 @@ function Row({
     event.eventType === "component.function_refused" ||
     event.eventType === "mcp.call_rejected";
   // Allowed by policy but not carried out.
-  const failed = event.eventType === "computer.action_failed";
+  const failed =
+    event.eventType === "computer.action_failed" ||
+    event.eventType === "mcp.call_failed";
 
   return (
     <tr className="border-border border-t align-top">
@@ -283,6 +289,8 @@ const DECISIONS: Record<string, string> = {
   "component.function_failed": "Could not be read",
 
   "mcp.call_succeeded": "Called on this Bot's behalf",
+  "mcp.call_allowed": "Allowed and sent",
+  "mcp.call_approval_required": "Waiting for approval",
   "mcp.call_rejected": "Blocked",
   "mcp.call_failed": "The server did not answer",
 

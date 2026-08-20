@@ -14,3 +14,18 @@ channels:
     description: Find authorized answers from company documents.
     permitted_agents: [knowledge]
     allowed_groups: [all]
+  - id: research-desk
+    name: Research Desk
+    description: Build sourced, decision-ready research briefs.
+    permitted_agents: [research-analyst, knowledge]
+    allowed_groups: [all]
+  - id: operations
+    name: Operations
+    description: Plan, execute, approve, and verify repeatable operational work.
+    permitted_agents: [operations-coordinator, knowledge]
+    allowed_groups: [operations, all]
+  - id: audit-review
+    name: Audit Review
+    description: Review task histories, approvals, and control evidence without changing source systems.
+    permitted_agents: [audit-reviewer, knowledge]
+    allowed_groups: [risk, compliance, audit]

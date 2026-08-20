@@ -17,6 +17,7 @@ import { Route as AuthedSettingsRouteRouteImport } from './routes/_authed/settin
 import { Route as AuthedAppIndexRouteImport } from './routes/_authed/_app/index'
 import { Route as AuthedAppBotRouteImport } from './routes/_authed/_app/bot'
 import { Route as AuthedAppSkillsRouteImport } from './routes/_authed/_app/skills'
+import { Route as AuthedAppWorkRouteImport } from './routes/_authed/_app/work'
 import { Route as AuthedAdminIndexRouteImport } from './routes/_authed/admin/index'
 import { Route as AuthedAdminAuditRouteImport } from './routes/_authed/admin/audit'
 import { Route as AuthedAdminBoundariesRouteImport } from './routes/_authed/admin/boundaries'
@@ -68,6 +69,11 @@ const AuthedAppBotRoute = AuthedAppBotRouteImport.update({
 const AuthedAppSkillsRoute = AuthedAppSkillsRouteImport.update({
   id: '/skills',
   path: '/skills',
+  getParentRoute: () => AuthedAppRoute,
+} as any)
+const AuthedAppWorkRoute = AuthedAppWorkRouteImport.update({
+  id: '/work',
+  path: '/work',
   getParentRoute: () => AuthedAppRoute,
 } as any)
 const AuthedAdminIndexRoute = AuthedAdminIndexRouteImport.update({
@@ -150,6 +156,7 @@ export interface FileRoutesByFullPath {
   '/settings': typeof AuthedSettingsRouteRouteWithChildren
   '/bot': typeof AuthedAppBotRoute
   '/skills': typeof AuthedAppSkillsRoute
+  '/work': typeof AuthedAppWorkRoute
   '/admin/audit': typeof AuthedAdminAuditRoute
   '/admin/boundaries': typeof AuthedAdminBoundariesRoute
   '/admin/components': typeof AuthedAdminComponentsRoute
@@ -170,6 +177,7 @@ export interface FileRoutesByTo {
   '/sign': typeof SignRoute
   '/bot': typeof AuthedAppBotRoute
   '/skills': typeof AuthedAppSkillsRoute
+  '/work': typeof AuthedAppWorkRoute
   '/admin/audit': typeof AuthedAdminAuditRoute
   '/admin/boundaries': typeof AuthedAdminBoundariesRoute
   '/admin/components': typeof AuthedAdminComponentsRoute
@@ -194,6 +202,7 @@ export interface FileRoutesById {
   '/_authed/_app': typeof AuthedAppRouteWithChildren
   '/_authed/_app/bot': typeof AuthedAppBotRoute
   '/_authed/_app/skills': typeof AuthedAppSkillsRoute
+  '/_authed/_app/work': typeof AuthedAppWorkRoute
   '/_authed/admin/audit': typeof AuthedAdminAuditRoute
   '/_authed/admin/boundaries': typeof AuthedAdminBoundariesRoute
   '/_authed/admin/components': typeof AuthedAdminComponentsRoute
@@ -219,6 +228,7 @@ export interface FileRouteTypes {
     | '/settings'
     | '/bot'
     | '/skills'
+    | '/work'
     | '/admin/audit'
     | '/admin/boundaries'
     | '/admin/components'
@@ -239,6 +249,7 @@ export interface FileRouteTypes {
     | '/sign'
     | '/bot'
     | '/skills'
+    | '/work'
     | '/admin/audit'
     | '/admin/boundaries'
     | '/admin/components'
@@ -262,6 +273,7 @@ export interface FileRouteTypes {
     | '/_authed/_app'
     | '/_authed/_app/bot'
     | '/_authed/_app/skills'
+    | '/_authed/_app/work'
     | '/_authed/admin/audit'
     | '/_authed/admin/boundaries'
     | '/_authed/admin/components'
@@ -340,6 +352,13 @@ declare module '@tanstack/react-router' {
       path: '/skills'
       fullPath: '/skills'
       preLoaderRoute: typeof AuthedAppSkillsRouteImport
+      parentRoute: typeof AuthedAppRoute
+    }
+    '/_authed/_app/work': {
+      id: '/_authed/_app/work'
+      path: '/work'
+      fullPath: '/work'
+      preLoaderRoute: typeof AuthedAppWorkRouteImport
       parentRoute: typeof AuthedAppRoute
     }
     '/_authed/admin/': {
@@ -497,6 +516,7 @@ const AuthedSettingsRouteRouteWithChildren =
 interface AuthedAppRouteChildren {
   AuthedAppBotRoute: typeof AuthedAppBotRoute
   AuthedAppSkillsRoute: typeof AuthedAppSkillsRoute
+  AuthedAppWorkRoute: typeof AuthedAppWorkRoute
   AuthedAppIndexRoute: typeof AuthedAppIndexRoute
   AuthedAppChannelChannelIdRoute: typeof AuthedAppChannelChannelIdRoute
   AuthedAppChannelNewRoute: typeof AuthedAppChannelNewRoute
@@ -506,6 +526,7 @@ interface AuthedAppRouteChildren {
 const AuthedAppRouteChildren: AuthedAppRouteChildren = {
   AuthedAppBotRoute: AuthedAppBotRoute,
   AuthedAppSkillsRoute: AuthedAppSkillsRoute,
+  AuthedAppWorkRoute: AuthedAppWorkRoute,
   AuthedAppIndexRoute: AuthedAppIndexRoute,
   AuthedAppChannelChannelIdRoute: AuthedAppChannelChannelIdRoute,
   AuthedAppChannelNewRoute: AuthedAppChannelNewRoute,

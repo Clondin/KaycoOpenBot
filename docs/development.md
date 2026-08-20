@@ -65,6 +65,7 @@ bun run format:check
 bun run lint
 bun run typecheck
 bun run test
+bun run eval
 bun run build
 ```
 

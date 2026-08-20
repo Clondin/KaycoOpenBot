@@ -1,0 +1,46 @@
+diff --git a/dist/agent/index.cjs b/dist/agent/index.cjs
+index fb5cb503c8f013d0d8cf4c8d77b04235ee55bab2..cacb329c12e49bab114c24b25c2ce6f6d88c472b 100644
+--- a/dist/agent/index.cjs
++++ b/dist/agent/index.cjs
+@@ -425,10 +425,6 @@ This is state from the application that you can edit by calling AGUISendStateSna
+ 				forwardSystemMessages: config.forwardSystemMessages,
+ 				forwardDeveloperMessages: config.forwardDeveloperMessages
+ 			});
+-			if (systemPrompt) messages.unshift({
+-				role: "system",
+-				content: systemPrompt
+-			});
+ 			const resumeEntries = input.resume ?? [];
+ 			if (resumeEntries.length > 0) {
+ 				const toolNameById = /* @__PURE__ */ new Map();
+@@ -469,6 +465,7 @@ This is state from the application that you can edit by calling AGUISendStateSna
+ 			}
+ 			const streamTextParams = {
+ 				model,
++				system: systemPrompt,
+ 				messages,
+ 				tools: allTools,
+ 				toolChoice: config.toolChoice,
+diff --git a/dist/agent/index.mjs b/dist/agent/index.mjs
+index 3231f8aa05d34750e4e4839e294fd6951d19a777..2be328d3a0ca99f4697cbd930129a4ee7a0ad878 100644
+--- a/dist/agent/index.mjs
++++ b/dist/agent/index.mjs
+@@ -424,10 +424,6 @@ This is state from the application that you can edit by calling AGUISendStateSna
+ 				forwardSystemMessages: config.forwardSystemMessages,
+ 				forwardDeveloperMessages: config.forwardDeveloperMessages
+ 			});
+-			if (systemPrompt) messages.unshift({
+-				role: "system",
+-				content: systemPrompt
+-			});
+ 			const resumeEntries = input.resume ?? [];
+ 			if (resumeEntries.length > 0) {
+ 				const toolNameById = /* @__PURE__ */ new Map();
+@@ -468,6 +464,7 @@ This is state from the application that you can edit by calling AGUISendStateSna
+ 			}
+ 			const streamTextParams = {
+ 				model,
++				system: systemPrompt,
+ 				messages,
+ 				tools: allTools,
+ 				toolChoice: config.toolChoice,

@@ -1,4 +1,6 @@
 import { queryOptions } from "@tanstack/react-query";
+import type { ActiveRun } from "@/lib/copilot/active-run";
+import { waitForApprovalDecision } from "@/lib/runs/approvals";
 
 /** A tool one server offers, as the Plugins page sees it. */
 export type PluginTool = {
@@ -126,22 +128,86 @@ export async function callPluginTool(
   ref: string,
   args: Record<string, unknown>,
   agentId: string,
+  task: ActiveRun,
   signal?: AbortSignal,
 ): Promise<PluginCallOutcome> {
-  const response = await fetch("/api/plugins/call", {
-    method: "POST",
-    credentials: "include",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ ref, args, agentId }),
-    ...(signal ? { signal } : {}),
-  });
+  const request = (approvalId?: string) => {
+    const headers = new Headers({ "content-type": "application/json" });
+    if (task.runId) headers.set("X-OpenBot-Run-Id", task.runId);
+    if (task.channelId) headers.set("X-OpenBot-Channel-Id", task.channelId);
+    if (approvalId) headers.set("X-OpenBot-Approval-Id", approvalId);
+    return fetch("/api/plugins/call", {
+      method: "POST",
+      credentials: "include",
+      headers,
+      body: JSON.stringify({ ref, args, agentId }),
+      ...(signal ? { signal } : {}),
+    });
+  };
 
-  const body = (await response.json().catch(() => null)) as {
+  let response: Response;
+  try {
+    response = await request();
+  } catch {
+    return {
+      ok: false,
+      refused: false,
+      reason: signal?.aborted
+        ? "The tool call was stopped."
+        : "The server did not answer.",
+    };
+  }
+
+  type ResponseBody = {
     text?: string;
     isError?: boolean;
     error?: string;
     rule?: string | null;
-  } | null;
+    approvalRequired?: boolean;
+    approval?: { id?: string; runId?: string | null };
+  };
+  let body = (await response.json().catch(() => null)) as ResponseBody | null;
+
+  if (response.status === 428 && body?.approvalRequired) {
+    const approvalId = body.approval?.id;
+    if (!approvalId || !task.runId || body.approval?.runId !== task.runId) {
+      return {
+        ok: false,
+        refused: true,
+        reason:
+          "This tool requires approval, but it is not attached to this durable task.",
+        rule: body.rule ?? null,
+      };
+    }
+
+    const decision = await waitForApprovalDecision(approvalId, signal);
+    if (decision !== "approved") {
+      return {
+        ok: false,
+        refused: true,
+        reason:
+          decision === "declined"
+            ? "The person declined this tool call."
+            : decision === "cancelled"
+              ? "The approval wait was stopped."
+              : "The approval request expired before it was decided.",
+        rule: body.rule ?? null,
+      };
+    }
+
+    try {
+      response = await request(approvalId);
+      body = (await response.json().catch(() => null)) as ResponseBody | null;
+    } catch {
+      return {
+        ok: false,
+        refused: false,
+        reason: signal?.aborted
+          ? "The approved tool call was stopped."
+          : "The approved tool call could not reach the server.",
+      };
+    }
+  }
 
   if (response.ok) {
     return {
@@ -150,7 +216,7 @@ export async function callPluginTool(
       isError: body?.isError === true,
     };
   }
-  if (response.status === 403) {
+  if (response.status === 403 || response.status === 409) {
     return {
       ok: false,
       refused: true,

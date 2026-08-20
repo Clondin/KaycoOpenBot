@@ -541,7 +541,10 @@ serve<StreamData>({
         return json({ supplied: true, characters, url: target.url() });
       } catch (error) {
         if (error instanceof StaleSnapshotError) {
-          return json({ error: error.message, stale: true }, 409);
+          return json(
+            { error: error.message, code: "stale_snapshot", stale: true },
+            409,
+          );
         }
         // The field is gone, which is unretryable, so the request is closed rather than left open.
         // Keeping it open is right for a mistyped value and wrong here: the person would retype their
@@ -671,7 +674,14 @@ serve<StreamData>({
       } catch (error) {
         // A person holding the wheel is not a failed navigation; the Bot should wait.
         if (error instanceof ControlError) {
-          return json({ error: error.message, humanHasControl: true }, 409);
+          return json(
+            {
+              error: error.message,
+              code: "human_control",
+              humanHasControl: true,
+            },
+            423,
+          );
         }
         // The page is the Bot's working surface, so a failed navigation is reported rather than
         // thrown: the transcript needs to say what happened, and the browser stays usable.
@@ -851,11 +861,21 @@ serve<StreamData>({
         // A stale ref is the caller's mistake and is fixable by taking a new snapshot, so it is a 409
         // rather than a 502: the computer is fine and retrying the same call unchanged will not help.
         if (error instanceof StaleSnapshotError) {
-          return json({ error: error.message, stale: true }, 409);
+          return json(
+            { error: error.message, code: "stale_snapshot", stale: true },
+            409,
+          );
         }
         // 409 as well, and for the same reason: nothing is broken, the caller simply has to wait.
         if (error instanceof ControlError) {
-          return json({ error: error.message, humanHasControl: true }, 409);
+          return json(
+            {
+              error: error.message,
+              code: "human_control",
+              humanHasControl: true,
+            },
+            423,
+          );
         }
         return json({ error: describe(error, "The action failed.") }, 502);
       }

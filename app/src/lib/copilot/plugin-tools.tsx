@@ -6,6 +6,7 @@ import { ToolLine } from "@/components/channels/tool-line";
 import { markdownComponents } from "@/lib/markdown";
 import * as z from "zod";
 import { useActiveBotId } from "@/lib/copilot/active-bot";
+import { useActiveRunHolder } from "@/lib/copilot/active-run";
 import {
   agentPluginsQueryOptions,
   callPluginTool,
@@ -111,6 +112,7 @@ function PluginTool({
   inputSchema: Record<string, unknown>;
   botId: string;
 }) {
+  const run = useActiveRunHolder();
   /**
    * Per-call render state. The SDK captures `render` at registration, so the renderer must read
    * current results from a ref keyed by tool call id.
@@ -151,6 +153,7 @@ function PluginTool({
         toolRef,
         args ?? {},
         botId,
+        run.current,
         context.signal,
       );
 

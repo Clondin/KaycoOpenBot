@@ -33,7 +33,7 @@ export type IdentifyUser = (
   request: Request,
 ) => Promise<{ id: string; name: string }>;
 
-type RegisteredBuiltInAgent = {
+export type RegisteredBuiltInAgent = {
   id: string;
   name: string;
   type: "built_in";
@@ -66,6 +66,14 @@ export type RegisteredAgent =
   | RegisteredBuiltInAgent
   | RegisteredRemoteAgent
   | RegisteredUnavailableAgent;
+
+/** Optional per-user replacement for built-in provider-key agents. */
+export type CodexAgentProvider = {
+  agentFor(
+    userId: string,
+    agent: RegisteredBuiltInAgent,
+  ): Promise<AbstractAgent | null>;
+};
 
 type AgentRunInput = Parameters<AbstractAgent["run"]>[0];
 type AgentMessage = AgentRunInput["messages"][number];
@@ -207,9 +215,13 @@ export function buildAgents(
   agents: RegisteredAgent[],
   model: RuntimeModel,
   apiKey: string | null,
+  overrides: ReadonlyMap<string, AbstractAgent> = new Map(),
 ): Record<string, AbstractAgent> {
   return Object.fromEntries(
-    agents.map((agent) => [agent.id, buildAgent(agent, model, apiKey)]),
+    agents.map((agent) => [
+      agent.id,
+      overrides.get(agent.id) ?? buildAgent(agent, model, apiKey),
+    ]),
   );
 }
 
@@ -276,6 +288,7 @@ export async function resolveRuntimeAgents(
   loadAgents: () => Promise<RegisteredAgent[]>,
   model: RuntimeModel,
   resolveModelApiKey: () => Promise<string | null>,
+  codex?: { userId: string; provider: CodexAgentProvider },
 ): Promise<Record<string, AbstractAgent>> {
   const registered = await loadAgents();
   if (registered.length === 0) {
@@ -284,10 +297,23 @@ export async function resolveRuntimeAgents(
     );
   }
 
-  const apiKey = registered.some((agent) => agent.type === "built_in")
+  const overrides = new Map<string, AbstractAgent>();
+  if (codex?.userId) {
+    await Promise.all(
+      registered.map(async (agent) => {
+        if (agent.type !== "built_in") return;
+        const replacement = await codex.provider.agentFor(codex.userId, agent);
+        if (replacement) overrides.set(agent.id, replacement);
+      }),
+    );
+  }
+
+  const apiKey = registered.some(
+    (agent) => agent.type === "built_in" && !overrides.has(agent.id),
+  )
     ? await resolveModelApiKey()
     : null;
-  return buildAgents(registered, model, apiKey);
+  return buildAgents(registered, model, apiKey, overrides);
 }
 
 /** Who is asking. Agent visibility is decided per person, so a run has to know this first. */
@@ -310,6 +336,7 @@ export function createRequestAgents(
   loadAgents: LoadAgentsForActor,
   model: RuntimeModel,
   resolveModelApiKey: () => Promise<string | null>,
+  codexAgentProvider?: CodexAgentProvider,
 ) {
   return async ({ request }: { request: Request }) => {
     const actor = await identifyActor(request);
@@ -317,6 +344,9 @@ export function createRequestAgents(
       () => loadAgents(actor),
       model,
       resolveModelApiKey,
+      codexAgentProvider
+        ? { userId: actor.id, provider: codexAgentProvider }
+        : undefined,
     );
   };
 }
@@ -335,6 +365,7 @@ export function mountCopilotRuntime(
   resolveModelApiKey: () => Promise<string | null>,
   identifyUser: IdentifyUser,
   identifyActor: IdentifyActor,
+  codexAgentProvider?: CodexAgentProvider,
   basePath = "/api/copilotkit",
 ) {
   const { intelligence } = config.runtime;
@@ -359,6 +390,7 @@ export function mountCopilotRuntime(
       loadAgents,
       model,
       resolveModelApiKey,
+      codexAgentProvider,
     ) as never,
   });
 

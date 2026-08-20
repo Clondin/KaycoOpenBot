@@ -7,7 +7,9 @@ import {
   readControl,
 } from "@/components/computer/take-the-wheel";
 import { useActiveBotHolder } from "./active-bot";
+import { type ActiveRun, useActiveRunHolder } from "./active-run";
 import { reportComputerActivity } from "./computer-activity";
+import { waitForApprovalDecision } from "../runs/approvals";
 
 /**
  * Frontend registrations for computer tools, including inline rendering and policy-refusal display.
@@ -44,20 +46,29 @@ async function waitForPerson(
 
 async function callComputer(
   botId: string,
+  task: ActiveRun,
   path: string,
   init?: RequestInit,
   signal?: AbortSignal,
 ): Promise<ToolOutcome> {
   // Announce before the call so the screen can open while the action is running.
   reportComputerActivity(botId);
-  let response: Response;
-  try {
-    response = await fetch(`/api/computers/${botId}${path}`, {
+  const request = async (approvalId?: string) => {
+    const headers = new Headers(init?.headers);
+    if (task.runId) headers.set("X-OpenBot-Run-Id", task.runId);
+    if (task.channelId) headers.set("X-OpenBot-Channel-Id", task.channelId);
+    if (approvalId) headers.set("X-OpenBot-Approval-Id", approvalId);
+    return fetch(`/api/computers/${botId}${path}`, {
       credentials: "include",
-      // Abort cancels the request and prevents later actions, but cannot undo browser work already executing.
       ...(signal ? { signal } : {}),
       ...init,
+      headers,
     });
+  };
+
+  let response: Response;
+  try {
+    response = await request();
   } catch (error) {
     // An abort is a stopped run, not a computer failure.
     if (error instanceof DOMException && error.name === "AbortError") {
@@ -69,10 +80,52 @@ async function callComputer(
     };
   }
 
-  const body = (await response.json().catch(() => null)) as Record<
+  let body = (await response.json().catch(() => null)) as Record<
     string,
     unknown
   > | null;
+
+  if (response.status === 428 && body?.approvalRequired === true) {
+    const approval = body.approval as { id?: unknown } | undefined;
+    const approvalId =
+      typeof approval?.id === "string" ? approval.id : undefined;
+    if (!approvalId || !task.runId) {
+      return {
+        ok: false,
+        refused: true,
+        reason:
+          "This action requires approval, but it is not running inside a durable task.",
+      };
+    }
+    const decision = await waitForApprovalDecision(approvalId, signal);
+    if (decision !== "approved") {
+      return {
+        ok: false,
+        refused: true,
+        reason:
+          decision === "declined"
+            ? "The person declined this action."
+            : decision === "cancelled"
+              ? "The approval wait was stopped."
+              : "The approval request expired before it was decided.",
+      };
+    }
+    try {
+      response = await request(approvalId);
+      body = (await response.json().catch(() => null)) as Record<
+        string,
+        unknown
+      > | null;
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        return { ok: false, reason: "Stopped.", stopped: true };
+      }
+      return {
+        ok: false,
+        reason: "The approved action could not reach the assistant's computer.",
+      };
+    }
+  }
 
   if (!response.ok) {
     return {
@@ -82,11 +135,13 @@ async function callComputer(
       ...(response.status === 403
         ? { refused: true, rule: body?.rule ?? null }
         : {}),
-      ...(response.status === 409
-        ? body?.humanHasControl === true
-          ? { humanHasControl: true }
-          : { staleRefs: true }
-        : {}),
+      ...(response.status === 423 || body?.code === "human_control"
+        ? { humanHasControl: true }
+        : response.status === 409
+          ? body?.humanHasControl === true
+            ? { humanHasControl: true }
+            : { staleRefs: true }
+          : {}),
     };
   }
 
@@ -174,6 +229,7 @@ function didNotWork(outcome: ComputerOutcome): boolean {
 
 export function ComputerTools() {
   const bot = useActiveBotHolder();
+  const run = useActiveRunHolder();
 
   useFrontendTool({
     name: "computer_navigate",
@@ -191,6 +247,7 @@ export function ComputerTools() {
     ) => {
       const result = await callComputer(
         bot.current,
+        run.current,
         "/navigate",
         {
           method: "POST",
@@ -222,7 +279,7 @@ export function ComputerTools() {
       "Read the page currently open on your computer, without opening anything. Use this after you " +
       "click something that changes the page, such as submitting a form, to find out what it now says.",
     parameters: z.object({}),
-    handler: async () => callComputer(bot.current, "/read"),
+    handler: async () => callComputer(bot.current, run.current, "/read"),
     render: () => null,
   });
 
@@ -235,7 +292,7 @@ export function ComputerTools() {
       "that your refs are stale, the page changed: call this again and use the new refs.",
     parameters: z.object({}),
     handler: async () =>
-      callComputer(bot.current, "/snapshot", { method: "POST" }),
+      callComputer(bot.current, run.current, "/snapshot", { method: "POST" }),
     // Snapshot renders a count only; navigate owns the screen view.
     render: ({ result, status }) => {
       const outcome = outcomeOf(result);
@@ -282,6 +339,7 @@ export function ComputerTools() {
     ) =>
       callComputer(
         bot.current,
+        run.current,
         "/type",
         {
           method: "POST",
@@ -324,6 +382,7 @@ export function ComputerTools() {
     ) =>
       callComputer(
         bot.current,
+        run.current,
         "/click",
         {
           method: "POST",
@@ -375,6 +434,7 @@ export function ComputerTools() {
     ) =>
       callComputer(
         bot.current,
+        run.current,
         "/key",
         {
           method: "POST",
@@ -423,6 +483,7 @@ export function ComputerTools() {
       const botId = bot.current;
       const asked = await callComputer(
         botId,
+        run.current,
         "/control/secret",
         {
           method: "POST",
@@ -518,6 +579,7 @@ export function ComputerTools() {
       const botId = bot.current;
       const asked = await callComputer(
         botId,
+        run.current,
         "/control/request",
         {
           method: "POST",
@@ -561,7 +623,7 @@ export function ComputerTools() {
         .describe("Optional folder to list. Omit for the whole workspace."),
     }),
     handler: async (input: { path?: string }) =>
-      callComputer(bot.current, "/files/list", {
+      callComputer(bot.current, run.current, "/files/list", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(input ?? {}),
@@ -599,7 +661,7 @@ export function ComputerTools() {
         .describe("Path relative to your workspace, such as notes.md"),
     }),
     handler: async (input: { path: string }) =>
-      callComputer(bot.current, "/files/read", {
+      callComputer(bot.current, run.current, "/files/read", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(input),
@@ -647,7 +709,7 @@ export function ComputerTools() {
       contents: string;
       append?: boolean;
     }) =>
-      callComputer(bot.current, "/files/write", {
+      callComputer(bot.current, run.current, "/files/write", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(input),
@@ -689,6 +751,7 @@ export function ComputerTools() {
     ) =>
       callComputer(
         bot.current,
+        run.current,
         "/scroll",
         {
           method: "POST",

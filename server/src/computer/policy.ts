@@ -11,7 +11,7 @@
  * thought of; an expression language can express the one they thought of. This is also the language
  * the enterprise gateway already speaks, so a rule written here means the same thing there.
  *
- * Precedence: deny beats allow. A rule that removes permission must never be
+ * Precedence: deny beats approval beats allow. A rule that removes permission must never be
  * defeated by a broader rule that grants it, or a company cannot reason about what it has forbidden.
  */
 import { evaluate } from "cel-js";
@@ -29,6 +29,8 @@ export type ActionPolicy = {
   mode: PolicyMode;
   /** Evaluated first. Any expression true means refused, whatever `allow` says. */
   deny: string[];
+  /** A matching action pauses until a person approves the exact server-resolved subject. */
+  approve?: string[];
   /** Any expression true means permitted. Empty means nothing is permitted. */
   allow: string[];
 };
@@ -130,6 +132,8 @@ export type PolicyContext = {
     server: string;
     tool: string;
     effect: "read" | "write";
+    /** Hash only: binds approvals to exact arguments without exposing them to rules or audit. */
+    argumentsHash?: string;
   };
 };
 
@@ -139,7 +143,9 @@ export type PolicyDecision = {
   /** Which expression decided it, so the audit row can say why and an operator can find the rule. */
   matched: string | null;
   /** Which list that expression came from. `default` means nothing matched and the floor applied. */
-  source: "deny" | "allow" | "default";
+  source: "deny" | "approve" | "allow" | "default";
+  /** True when policy wants a durable human decision before the action may be forwarded. */
+  approvalRequired: boolean;
   /** True when the action should actually be carried out. False for a refusal in `enforce`. */
   forward: boolean;
   /** Why, in words that go in front of a person. */
@@ -231,10 +237,28 @@ export function evaluateActionPolicy(
         mode,
         matched: expression,
         source: "deny",
+        approvalRequired: false,
         // dry-run records the refusal and lets the work continue, which is what makes it safe to
         // switch on against live traffic.
         forward: mode === "dry-run",
         reason: describeRefusal(context, expression),
+      };
+    }
+  }
+
+  // Approval is evaluated after deny: a person may approve something that is normally sensitive,
+  // but can never override a deployment boundary that says it must not happen at all.
+  for (const expression of policy?.approve ?? []) {
+    if (matches(expression, context, true)) {
+      return {
+        allowed: false,
+        mode,
+        matched: expression,
+        source: "approve",
+        approvalRequired: true,
+        // Dry-run shows operators what would pause without interrupting real work.
+        forward: mode === "dry-run",
+        reason: `This action needs approval because it matched: ${expression}`,
       };
     }
   }
@@ -246,6 +270,7 @@ export function evaluateActionPolicy(
         mode,
         matched: expression,
         source: "allow",
+        approvalRequired: false,
         forward: true,
         reason: "Permitted by policy.",
       };
@@ -257,6 +282,7 @@ export function evaluateActionPolicy(
     mode,
     matched: null,
     source: "default",
+    approvalRequired: false,
     forward: mode === "dry-run",
     reason:
       "No rule in this deployment's policy permits that action, so it was refused. " +

@@ -1,5 +1,6 @@
 import { and, asc, eq, inArray, isNull, or } from "drizzle-orm";
 import { type AuditStore, recordAuditEvent } from "../audit";
+import type { ApprovalRequest, ApprovalService } from "../approvals/store";
 import {
   type ActionPolicy,
   evaluateActionPolicy,
@@ -117,6 +118,13 @@ export class PluginRefusedError extends Error {
   }
 }
 
+export class PluginApprovalRequiredError extends Error {
+  constructor(readonly request: ApprovalRequest) {
+    super(request.summary);
+    this.name = "PluginApprovalRequiredError";
+  }
+}
+
 export class CatalogueEntryUnknownError extends Error {
   constructor(key: string) {
     super(`${key} is not a server this deployment will connect to.`);
@@ -159,6 +167,7 @@ export type PluginStoreOptions = {
   encryptionKey: string;
   /** Read at call time, never captured, so a policy changed a moment ago applies to this call. */
   policy: () => ActionPolicy;
+  approvals?: ApprovalService;
 };
 
 export function createPluginStore(options: PluginStoreOptions) {
@@ -736,6 +745,10 @@ export function createPluginStore(options: PluginStoreOptions) {
       args: Record<string, unknown>;
       botId: string;
       actorId: string;
+      actorRole?: "admin" | "user";
+      runId?: string;
+      channelId?: string;
+      approvalId?: string;
     }): Promise<{ text: string; isError: boolean }> {
       const [serverId, ...rest] = input.ref.split("/");
       const toolName = rest.join("/");
@@ -803,13 +816,66 @@ export function createPluginStore(options: PluginStoreOptions) {
         key: "",
         file: { path: "", name: "", extension: "" },
         intent: effect === "write" ? "write_tool" : "read_tool",
-        mcp: { server: serverId, tool: toolName, effect },
+        mcp: {
+          server: serverId,
+          tool: toolName,
+          effect,
+          argumentsHash: await hashArguments(args),
+        },
       };
 
-      const verdict = evaluateActionPolicy(options.policy(), context);
+      let verdict = evaluateActionPolicy(options.policy(), context);
+      let approvalId: string | undefined;
+      if (verdict.approvalRequired && !verdict.forward) {
+        if (!options.approvals) {
+          throw new PluginRefusedError(
+            "This tool call requires approval, but the approval service is unavailable.",
+            verdict.matched,
+          );
+        }
+        const authorization = await options.approvals.authorize({
+          actor: {
+            id: input.actorId,
+            userId: input.actorId,
+            ...(input.actorRole ? { role: input.actorRole } : {}),
+            ...(input.runId ? { runId: input.runId } : {}),
+            ...(input.channelId ? { channelId: input.channelId } : {}),
+            ...(input.approvalId ? { approvalId: input.approvalId } : {}),
+          },
+          botId: input.botId,
+          toolName: toolNameFor(input.ref),
+          context,
+          policyRule: verdict.matched,
+        });
+        if (!authorization.authorized) {
+          await recordAuditEvent(auditStore, {
+            eventType: "mcp.call_approval_required",
+            targetType: "mcp_tool",
+            targetId: input.ref,
+            payload: {
+              actor: input.actorId,
+              bot: input.botId,
+              server: serverId,
+              tool: toolName,
+              effect,
+              approvalId: authorization.request.id,
+              rule: verdict.matched,
+            },
+          });
+          throw new PluginApprovalRequiredError(authorization.request);
+        }
+        approvalId = authorization.approvalId;
+        verdict = {
+          ...verdict,
+          allowed: true,
+          approvalRequired: false,
+          forward: true,
+          reason: "Permitted by a recorded approval.",
+        };
+      }
 
       await recordAuditEvent(auditStore, {
-        eventType: verdict.forward ? "mcp.call_succeeded" : "mcp.call_rejected",
+        eventType: verdict.forward ? "mcp.call_allowed" : "mcp.call_rejected",
         targetType: "mcp_tool",
         targetId: input.ref,
         payload: {
@@ -823,7 +889,9 @@ export function createPluginStore(options: PluginStoreOptions) {
             mode: verdict.mode,
             rule: verdict.matched,
             source: verdict.source,
-            carriedOut: verdict.forward,
+            willAttempt: verdict.forward,
+            approvalRequired: verdict.approvalRequired,
+            ...(approvalId ? { approvalId } : {}),
           },
         },
       });
@@ -832,15 +900,63 @@ export function createPluginStore(options: PluginStoreOptions) {
         throw new PluginRefusedError(verdict.reason, verdict.matched);
       }
 
-      const token = await tokenFor(row.credentialId);
-      const result = await callRemoteTool(
-        { url: row.url, token },
-        toolName,
-        args,
-      );
-      return { text: result.text, isError: result.isError };
+      try {
+        const token = await tokenFor(row.credentialId);
+        const result = await callRemoteTool(
+          { url: row.url, token },
+          toolName,
+          args,
+        );
+        await recordAuditEvent(auditStore, {
+          eventType: "mcp.call_succeeded",
+          targetType: "mcp_tool",
+          targetId: input.ref,
+          payload: {
+            actor: input.actorId,
+            bot: input.botId,
+            server: serverId,
+            tool: toolName,
+            effect,
+            ...(approvalId ? { approvalId } : {}),
+          },
+        });
+        return { text: result.text, isError: result.isError };
+      } catch (error) {
+        await recordAuditEvent(auditStore, {
+          eventType: "mcp.call_failed",
+          targetType: "mcp_tool",
+          targetId: input.ref,
+          payload: {
+            actor: input.actorId,
+            bot: input.botId,
+            server: serverId,
+            tool: toolName,
+            effect,
+            failure: "The remote server did not complete the tool call.",
+            ...(approvalId ? { approvalId } : {}),
+          },
+        });
+        throw error;
+      }
     },
   };
+}
+
+async function hashArguments(args: Record<string, unknown>): Promise<string> {
+  const canonical = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(canonical);
+    if (!value || typeof value !== "object") return value;
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, nested]) => [key, canonical(nested)]),
+    );
+  };
+  const bytes = new TextEncoder().encode(JSON.stringify(canonical(args)));
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
 }
 
 /**

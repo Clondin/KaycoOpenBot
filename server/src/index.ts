@@ -2,6 +2,7 @@ import { serve } from "bun";
 import { createAgentProfileStore } from "./agents/profile-store";
 import { createRuntimeAgentLoader } from "./agents/runtime-agents";
 import { createApp } from "./app";
+import { createApprovalService } from "./approvals/store";
 import { createAuditReader, createAuditStore, recordAuditEvent } from "./audit";
 import { createAuth } from "./auth";
 import { DEV_ACTOR, initializeDevActorUser } from "./auth/dev-actor";
@@ -14,6 +15,9 @@ import {
 import { createChannelStore } from "./channels/routes";
 import { websocket as channelSocket } from "./channels/socket";
 import { createThreadIdentity } from "./channels/thread-identity";
+import { CodexAgent } from "./codex/agent";
+import { CodexProcessManager } from "./codex/manager";
+import { createCodexThreadStore } from "./codex/thread-store";
 import { createSandboxedStore } from "./components/sandboxed";
 import { createComponentStore } from "./components/store";
 import { createComputerClient } from "./computer/client";
@@ -28,6 +32,7 @@ import { createConnectorAdminService } from "./connectors";
 import {
   type IdentifyActor,
   type IdentifyUser,
+  type CodexAgentProvider,
   mountCopilotRuntime,
 } from "./copilot";
 import {
@@ -38,11 +43,18 @@ import {
 import { createDatabase } from "./db/client";
 import { isTrustedWebSocketOrigin } from "./origin";
 import { createPluginStore } from "./plugins/store";
+import { createRunStore } from "./runs/store";
 import {
   createPackageStatusReader,
   loadTenantPackage,
   synchronizeTenantPackage,
 } from "./tenant-package";
+import { createDelegationStore } from "./work/delegations";
+import { createMemoryStore } from "./work/memory";
+import { createNotificationStore } from "./work/notifications";
+import { createProjectStore } from "./work/projects";
+import { createRoutineStore } from "./work/routines";
+import { startRoutineScheduler } from "./work/scheduler";
 
 /**
  * Who is asking, for a CopilotKit request.
@@ -106,6 +118,31 @@ const config = loadConfig();
 const port = Number.parseInt(process.env.PORT ?? "3001", 10);
 const database = createDatabase(config.databaseUrl);
 await initializeDevActorUser(database, config.devNoAuth);
+const codexConfig = config.codex;
+const codexManager = codexConfig
+  ? new CodexProcessManager(codexConfig)
+  : undefined;
+const codexThreadStore = codexConfig
+  ? createCodexThreadStore(database)
+  : undefined;
+const codexAgentProvider: CodexAgentProvider | undefined =
+  codexConfig && codexManager && codexThreadStore
+    ? {
+        async agentFor(userId, agent) {
+          const snapshot = await codexManager.account(userId);
+          if (snapshot.account?.type !== "chatgpt") return null;
+          return new CodexAgent({
+            userId,
+            agentId: agent.id,
+            name: agent.name,
+            systemPrompt: agent.systemPrompt,
+            manager: codexManager,
+            threadStore: codexThreadStore,
+            config: codexConfig,
+          });
+        },
+      }
+    : undefined;
 // The vault, built before the agent store because a customer's agent may sit behind a key and that
 // key belongs here rather than on the agent row. See agents/auth-header.ts.
 const credentialStore = createCredentialStore(database);
@@ -185,6 +222,46 @@ const policySource = await policyStore.load();
  * unavailable, and the row is a note for a reader rather than something the server depends on.
  */
 const bootAuditStore = createAuditStore(database);
+const runStore = createRunStore(database, bootAuditStore);
+const approvalService = createApprovalService(
+  database,
+  bootAuditStore,
+  runStore,
+);
+const notificationStore = createNotificationStore(database);
+const projectStore = createProjectStore(
+  database,
+  agentProfileStore,
+  bootAuditStore,
+);
+const memoryStore = createMemoryStore(
+  database,
+  agentProfileStore,
+  bootAuditStore,
+);
+const routineStore = createRoutineStore(
+  database,
+  runStore,
+  notificationStore,
+  bootAuditStore,
+);
+const delegationStore = createDelegationStore(
+  database,
+  agentProfileStore,
+  channelStore,
+  runStore,
+  notificationStore,
+  bootAuditStore,
+);
+const workServices = {
+  projects: projectStore,
+  routines: routineStore,
+  delegations: delegationStore,
+  memory: memoryStore,
+  notifications: notificationStore,
+  runs: runStore,
+};
+const stopRoutineScheduler = startRoutineScheduler(routineStore);
 
 /**
  * What a Bot can reach beyond its own computer.
@@ -202,6 +279,7 @@ const pluginStore = createPluginStore({
   credentials: credentialStore,
   encryptionKey: config.keyEncryptionKey,
   policy: () => policyStore.get(),
+  approvals: approvalService,
 });
 
 void recordAuditEvent(bootAuditStore, {
@@ -318,6 +396,7 @@ const app = createApp(
       }),
     identifyUser,
     identifyActor,
+    codexAgentProvider,
   ),
   computerClient,
   // The only path to an acting call.
@@ -330,6 +409,7 @@ const app = createApp(
         policy: () => policyStore.get(),
         // Stop, reset and the listing act on containers when there are containers to act on.
         ...(supervisor ? { supervisor } : {}),
+        approvals: approvalService,
       })
     : undefined,
   policyStore,
@@ -348,6 +428,24 @@ const app = createApp(
   sandboxedStore,
   // How a thread that has no channel is named, so the direct Bot chat is in the same namespace.
   threadIdentity,
+  runStore,
+  approvalService,
+  async () => ({
+    provider: tenantPackage.model.provider,
+    model: tenantPackage.model.defaultModel,
+    keyId: tenantPackage.model.credentialSecretRef,
+    configured: Boolean(
+      await resolveModelApiKey({
+        encryptionKey: config.keyEncryptionKey,
+        reader: credentialStore,
+        provider: tenantPackage.model.provider,
+        keyId: tenantPackage.model.credentialSecretRef,
+        environment: process.env,
+      }),
+    ),
+  }),
+  workServices,
+  codexManager,
 );
 
 /**
@@ -494,7 +592,11 @@ if (config.devNoAuth) {
 // way out, so a watch-mode restart does not leave one behind on every reload.
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.on(signal, () => {
-    void channelActivityListener.stop().finally(() => process.exit(0));
+    stopRoutineScheduler();
+    void Promise.all([
+      channelActivityListener.stop(),
+      codexManager?.stopAll() ?? Promise.resolve(),
+    ]).finally(() => process.exit(0));
   });
 }
 

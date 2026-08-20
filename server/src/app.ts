@@ -3,6 +3,7 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import type { AgentProfileStore } from "./agents/profile-store";
 import { createAgentRoutes } from "./agents/routes";
+import type { ApprovalService } from "./approvals/store";
 import { type AuditReader, type AuditStore, auditQueryFromUrl } from "./audit";
 import { createDevRequireUser } from "./auth/dev-actor";
 import {
@@ -16,6 +17,8 @@ import type { ChannelEventHub } from "./channels/events";
 import { type ChannelStore, createChannelRoutes } from "./channels/routes";
 import type { ThreadIdentity } from "./channels/thread-identity";
 import { createThreadRoutes } from "./channels/thread-routes";
+import type { CodexProcessManager } from "./codex/manager";
+import { createCodexRoutes } from "./codex/routes";
 import { createComponentRoutes } from "./components/routes";
 import type { SandboxedStore } from "./components/sandboxed";
 import { createSandboxedRoutes } from "./components/sandboxed-routes";
@@ -29,7 +32,14 @@ import type { ConnectorAdminService } from "./connectors";
 import type { CredentialAdminService, CredentialInput } from "./credentials";
 import { createPluginRoutes } from "./plugins/routes";
 import type { PluginStore } from "./plugins/store";
+import { createRunRoutes } from "./runs/routes";
+import type { RunStore } from "./runs/store";
 import type { PackageStatusReader } from "./tenant-package";
+import {
+  createRoutineWebhookRoutes,
+  createWorkRoutes,
+  type WorkServices,
+} from "./work/routes";
 
 export function createApp(
   config: DeploymentConfig,
@@ -96,6 +106,21 @@ export function createApp(
    * says nothing about which deployment the conversation belongs to.
    */
   threadIdentity?: ThreadIdentity,
+  /** One durable record per assigned turn, independent from the transcript provider. */
+  runStore?: RunStore,
+  /** Server-issued decisions that can be consumed only by the exact governed action. */
+  approvalService?: ApprovalService,
+  /** The selected model and whether its write-only key can be resolved. */
+  modelStatusReader?: () => Promise<{
+    provider: string;
+    model: string;
+    keyId: string;
+    configured: boolean;
+  }>,
+  /** Always-on work surfaces around the model runtime: routines, handoffs, memory and projects. */
+  workServices?: WorkServices,
+  /** Per-user ChatGPT connection and Codex App Server lifecycle. */
+  codexManager?: CodexProcessManager,
 ) {
   const app = new Hono<{ Variables: AppVariables }>();
 
@@ -110,6 +135,9 @@ export function createApp(
         "Authorization",
         "X-CopilotCloud-Public-Api-Key",
         "X-CopilotKit-Runtime-Client-GQL-Version",
+        "X-OpenBot-Run-Id",
+        "X-OpenBot-Channel-Id",
+        "X-OpenBot-Approval-Id",
       ],
       exposeHeaders: ["X-CopilotKit-Runtime-Version"],
       maxAge: 86_400,
@@ -124,8 +152,90 @@ export function createApp(
     context.json({
       mode: config.runtime.mode,
       durableHistory: config.runtime.durableHistory,
+      codex: Boolean(config.codex),
     }),
   );
+  /**
+   * Start Google OAuth as a top-level navigation on the API origin.
+   *
+   * A cross-site `fetch` from a Vercel hostname to the API can have its Set-Cookie blocked as a
+   * third-party cookie. Google then redirects to the callback without Better Auth's state cookie and
+   * the valid login ends in `state_mismatch`. This GET is itself the browser navigation, so the API
+   * sets state in a first-party context before redirecting to Google.
+   */
+  app.get("/api/auth/google/start", async (context) => {
+    if (!auth || !config.auth) {
+      return context.json(
+        { error: "Google authentication is not configured." },
+        503,
+      );
+    }
+    const callback = trustedCallback(
+      context.req.query("callbackURL"),
+      config.auth.trustedOrigins,
+    );
+    if (!callback) {
+      return context.json(
+        { error: "The sign-in return address is not trusted." },
+        400,
+      );
+    }
+
+    const response = await auth.handler(
+      new Request(new URL("/api/auth/sign-in/social", config.auth.baseUrl), {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          origin: new URL(callback).origin,
+          // This request is created inside the route, so Better Auth cannot otherwise see the
+          // client address that Caddy attached to the browser request. Preserve the proxy-provided
+          // value so its per-IP OAuth rate limit does not collapse every organization user into one
+          // shared bucket. The server is reachable only through the deployment's Caddy service.
+          ...(context.req.header("x-forwarded-for")
+            ? {
+                "x-forwarded-for": context.req.header(
+                  "x-forwarded-for",
+                ) as string,
+              }
+            : {}),
+          ...(context.req.header("user-agent")
+            ? { "user-agent": context.req.header("user-agent") as string }
+            : {}),
+        },
+        body: JSON.stringify({
+          provider: "google",
+          callbackURL: callback,
+          disableRedirect: true,
+        }),
+      }),
+    );
+    const body = (await response.json().catch(() => null)) as {
+      url?: unknown;
+      message?: unknown;
+    } | null;
+    const googleUrl = googleAuthorizationUrl(body?.url);
+    if (!response.ok || !googleUrl) {
+      return context.json(
+        {
+          error:
+            typeof body?.message === "string"
+              ? body.message
+              : "Google sign-in could not be started.",
+        },
+        502,
+      );
+    }
+
+    const headers = new Headers({
+      location: googleUrl,
+      "cache-control": "no-store",
+      pragma: "no-cache",
+    });
+    for (const cookie of response.headers.getSetCookie()) {
+      headers.append("set-cookie", cookie);
+    }
+    return new Response(null, { status: 302, headers });
+  });
   app.on(["GET", "POST"], "/api/auth/*", (context) => {
     if (!auth) {
       return context.json(
@@ -156,6 +266,14 @@ export function createApp(
   app.get("/api/admin/status", requireUser, (context) => {
     const denied = requireAdmin(context);
     return denied ?? context.json({ status: "ok" });
+  });
+  app.get("/api/admin/model-status", requireUser, async (context) => {
+    const denied = requireAdmin(context);
+    if (denied) return denied;
+    if (!modelStatusReader) {
+      return context.json({ error: "Model status is not configured." }, 503);
+    }
+    return context.json({ model: await modelStatusReader() });
   });
   app.get("/api/admin/audit-events", requireUser, async (context) => {
     const denied = requireAdmin(context);
@@ -373,7 +491,51 @@ export function createApp(
     app.route("/api/threads", createThreadRoutes(threadIdentity, requireUser));
   }
 
+  if (runStore && approvalService) {
+    app.route(
+      "/api/runs",
+      createRunRoutes(runStore, approvalService, requireUser),
+    );
+  }
+
+  if (workServices) {
+    app.route("/api/work", createWorkRoutes(workServices, requireUser));
+    // External triggers authenticate with a one-time-visible bearer token rather than a user cookie.
+    app.route(
+      "/api/hooks/routines",
+      createRoutineWebhookRoutes(workServices.routines),
+    );
+  }
+
+  if (codexManager) {
+    app.route("/api/codex", createCodexRoutes(codexManager, requireUser));
+  }
+
   return app;
+}
+
+function trustedCallback(raw: string | undefined, trustedOrigins: string[]) {
+  if (!raw) return null;
+  try {
+    const callback = new URL(raw);
+    return trustedOrigins.includes(callback.origin)
+      ? callback.toString()
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function googleAuthorizationUrl(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && url.hostname === "accounts.google.com"
+      ? url.toString()
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 function googleDriveSetupInput(value: unknown, actorUserId: string) {

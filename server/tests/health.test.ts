@@ -26,6 +26,7 @@ describe("runtime capabilities", () => {
     await expect(response.json()).resolves.toEqual({
       mode: "intelligence",
       durableHistory: true,
+      codex: false,
     });
   });
 
@@ -39,7 +40,7 @@ describe("runtime capabilities", () => {
     expect(body).not.toContain("tenant-api-key");
     expect(body).not.toContain("license-token");
     // The settings object itself must not be projected, whatever it happens to hold today.
-    expect(Object.keys(parsed)).toEqual(["mode", "durableHistory"]);
+    expect(Object.keys(parsed)).toEqual(["mode", "durableHistory", "codex"]);
   });
 });
 
@@ -147,5 +148,76 @@ describe("authentication availability", () => {
     );
 
     expect(response.status).toBe(204);
+  });
+
+  test("starts Google OAuth as a top-level API navigation and preserves state cookies", async () => {
+    let forwarded: Request | undefined;
+    const authenticatedApp = createApp(
+      loadConfig({
+        ...testEnvironment(),
+        BETTER_AUTH_URL: "https://api.example.com",
+        TRUSTED_ORIGINS: "https://openbot.example.com",
+        BETTER_AUTH_CROSS_SITE_COOKIES: "true",
+      }),
+      {
+        handler: async (request) => {
+          forwarded = request;
+          const headers = new Headers({ "content-type": "application/json" });
+          headers.append(
+            "set-cookie",
+            "__Secure-better-auth.state=opaque; Path=/; HttpOnly; Secure; SameSite=None",
+          );
+          return new Response(
+            JSON.stringify({
+              url: "https://accounts.google.com/o/oauth2/v2/auth?state=opaque",
+              redirect: false,
+            }),
+            { headers },
+          );
+        },
+      },
+    );
+
+    const response = await authenticatedApp.request(
+      "https://api.example.com/api/auth/google/start?callbackURL=https%3A%2F%2Fopenbot.example.com",
+      {
+        headers: {
+          "user-agent": "OpenBot OAuth test",
+          "x-forwarded-for": "203.0.113.42",
+        },
+      },
+    );
+
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toStartWith(
+      "https://accounts.google.com/",
+    );
+    expect(response.headers.get("set-cookie")).toContain(
+      "__Secure-better-auth.state=opaque",
+    );
+    expect(forwarded?.method).toBe("POST");
+    expect(forwarded?.headers.get("x-forwarded-for")).toBe("203.0.113.42");
+    expect(forwarded?.headers.get("user-agent")).toBe("OpenBot OAuth test");
+    await expect(forwarded?.json()).resolves.toMatchObject({
+      provider: "google",
+      callbackURL: "https://openbot.example.com/",
+      disableRedirect: true,
+    });
+  });
+
+  test("refuses an untrusted OAuth return address before creating state", async () => {
+    let called = false;
+    const authenticatedApp = createApp(loadConfig(testEnvironment()), {
+      handler: () => {
+        called = true;
+        return new Response();
+      },
+    });
+
+    const response = await authenticatedApp.request(
+      "http://openbot.local/api/auth/google/start?callbackURL=https%3A%2F%2Fattacker.example",
+    );
+    expect(response.status).toBe(400);
+    expect(called).toBe(false);
   });
 });

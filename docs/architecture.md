@@ -13,14 +13,14 @@ Regenerate it with `bun run diagram` after changing anything it shows.
 
 | Component                | Port                       | Responsibility                                                                                                                              |
 | ------------------------ | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `app`                    | 3010                       | React/Vite interface for channels, Bot chat, live screen, settings, and admin pages.                                                        |
-| `server`                 | 3001                       | API, CopilotKit runtime, auth, roles, tenant package, coworkers, channels, policy, audit, credentials, plugins, components, and connectors. |
+| `app`                    | 3010                       | React/Vite interface for channels, Bot chat, the work control center, live screen, settings, and admin pages.                               |
+| `server`                 | 3001                       | API, CopilotKit runtime, auth, roles, tenant package, coworkers, channels, durable work, policy, audit, credentials, plugins, components, and connectors. |
 | `agent-computer`         | 4100                       | Chromium, `/workspace`, browser profile, screenshots, snapshots, and file tools.                                                            |
 | `agent-bot`              | 4200                       | Proof-of-concept AG-UI Bot.                                                                                                                     |
 | `agent-langgraph`        | 4201                       | LangGraph AG-UI Bot.                                                                                                                        |
 | `supervisor`             | 4500 host / 4300 container | Creates, stops, resets, and lists per-Bot computer containers.                                                                              |
-| PostgreSQL with pgvector | 5432                       | Product data, audit rows, credentials, policy, grants, channels, components, connector state, and knowledge records.                        |
-| CopilotKit Intelligence  | external                   | Durable threads, memory, and realtime gateway.                                                                                              |
+| PostgreSQL with pgvector | 5432                       | Product data, audit rows, credentials, policy, grants, channels, projects, routines, handoffs, inspectable memory, components, connector state, and knowledge records. |
+| CopilotKit Intelligence  | external                   | Durable conversation threads and realtime gateway.                                                                                          |
 
 `scripts/start.sh` starts PostgreSQL, `agent-computer`, `agent-bot`, `agent-langgraph`, and the supervisor through Docker Compose, then starts `server` and `app` on the host.
 
@@ -85,7 +85,7 @@ While a person controls the browser, Bot actions are refused rather than queued.
 
 Secret entry is separate from chat content. The audit trail records that a secret was requested or supplied and the character count, not the secret value.
 
-## Coworkers and channels
+## Coworkers, channels, and durable work
 
 A coworker is a durable Bot profile:
 
@@ -93,7 +93,33 @@ A coworker is a durable Bot profile:
 - `agent_profiles` stores name, title, role, owner, visibility, and deletion state.
 - `agent_preferences` stores per-user roster state.
 
-A channel is a conversation with one coworker and a CopilotKit Intelligence thread mapping. Starting a new channel creates a new thread.
+A channel is a conversation with one or more coworkers and one CopilotKit
+Intelligence thread mapping. A team channel always has an explicit active
+coworker; that coworker alone answers the next turn, while the shared transcript
+keeps the handoff legible. Starting a new channel creates a new thread. Each
+coworker continues to use its own computer, browser profile, workspace, and
+granted tools.
+
+The `/work` surface is backed by deployment-owned PostgreSQL records:
+
+- `task_runs` and `task_run_events` record durable attempts and lifecycle transitions;
+- `routines` and `routine_dispatches` create idempotent manual, scheduled, or authenticated-webhook work;
+- `projects`, members, assigned agents, and versioned artifacts hold explicitly shared project context;
+- `delegations` and delegation messages make user-to-Bot and Bot-to-Bot handoffs durable and attributable;
+- `memory_entries` stores inspectable user, coworker, or project memory with source, confidence, and pinning;
+- `notifications` surfaces scheduled work and handoff outcomes to the owning user.
+
+The routine scheduler claims due rows with database locks, advances the next
+occurrence before dispatch, and reserves a unique routine/time pair. Webhook
+tokens are shown once and only a cryptographic hash is stored. Starting queued
+routine or delegation work reuses the reserved task run rather than creating a
+second attempt.
+
+Relevant user and coworker memory is supplied to a conversation as system
+context and can also be recalled explicitly through a Bot tool. The memory UI
+remains the source of truth: people can inspect, pin, edit, or remove entries.
+Secrets and transient chat text are explicitly excluded from the memory tool's
+contract.
 
 See [coworkers.md](coworkers.md).
 
@@ -125,6 +151,8 @@ MCP servers and skills share the plugin grant table, but they have different own
 The curated MCP catalogue contains Atlassian, Box, Slack, Salesforce, and ServiceNow. Custom MCP servers must pass URL checks; unknown tools and custom-server tools are treated as writes unless positively classified as reads.
 
 Every MCP call checks the grant first, then evaluates the same action policy engine with MCP context, then audits the result.
+
+The versioned extension SDK packages connectors and declarative skills. External action tools remain MCP tools so extensions cannot create a second, ungoverned execution path. See [extensions.md](extensions.md).
 
 ## Tenant package and knowledge
 

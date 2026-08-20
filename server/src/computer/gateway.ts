@@ -18,6 +18,7 @@
  * The refs are opaque to the caller precisely so that the server holds the mapping.
  */
 import { type AuditStore, recordAuditEvent } from "../audit";
+import type { ApprovalRequest, ApprovalService } from "../approvals/store";
 import type { ComputerClient } from "./client";
 import {
   type ActionPolicy,
@@ -50,12 +51,29 @@ export class ActionRefusedError extends Error {
   }
 }
 
+/** The action is valid, but policy requires the named person to decide before it can run. */
+export class ApprovalRequiredError extends Error {
+  readonly request: ApprovalRequest;
+
+  constructor(request: ApprovalRequest) {
+    super(request.summary);
+    this.name = "ApprovalRequiredError";
+    this.request = request;
+  }
+}
+
 /** Who is asking. The gateway records this; it does not decide it. */
 export type ActionActor = {
   /** The signed-in person, or the local actor when authentication is not configured. */
   id: string;
+  role?: "admin" | "user";
   /** Null unless this is a real row in `users`, because the audit table has a foreign key to it. */
   userId?: string;
+  /** Durable task context supplied by the authenticated surface, never by the model prompt. */
+  runId?: string;
+  channelId?: string;
+  /** Opaque approval to consume. It is useful only for the exact server-resolved action. */
+  approvalId?: string;
 };
 
 export type ComputerGatewayOptions = {
@@ -76,6 +94,8 @@ export type ComputerGatewayOptions = {
   auditStore: AuditStore;
   /** Absent denies everything. See evaluateActionPolicy. */
   policy: () => ActionPolicy | undefined;
+  /** Absent means approval rules fail closed rather than silently becoming allows. */
+  approvals?: ApprovalService;
 };
 
 /**
@@ -189,7 +209,60 @@ export function createComputerGateway(options: ComputerGatewayOptions) {
       ...(filePath ? { file: describeFile(filePath) } : {}),
     };
 
-    const decision = evaluateActionPolicy(options.policy(), context);
+    let decision = evaluateActionPolicy(options.policy(), context);
+    let approvalId: string | undefined;
+
+    if (decision.approvalRequired && !decision.forward) {
+      if (!options.approvals) {
+        await write(auditStore, {
+          toolName,
+          botId,
+          actor,
+          computerId,
+          element,
+          ref,
+          ...(subject.key ? { key: subject.key } : {}),
+          filePath,
+          pageUrl,
+          decision,
+        });
+        throw new ActionRefusedError(
+          "This action requires approval, but the approval service is unavailable.",
+          decision.matched,
+        );
+      }
+      const authorization = await options.approvals.authorize({
+        actor,
+        botId,
+        toolName,
+        context,
+        policyRule: decision.matched,
+      });
+      if (!authorization.authorized) {
+        await write(auditStore, {
+          toolName,
+          botId,
+          actor,
+          computerId,
+          element,
+          ref,
+          ...(subject.key ? { key: subject.key } : {}),
+          filePath,
+          pageUrl,
+          decision,
+          approvalId: authorization.request.id,
+        });
+        throw new ApprovalRequiredError(authorization.request);
+      }
+      approvalId = authorization.approvalId;
+      decision = {
+        ...decision,
+        allowed: true,
+        approvalRequired: false,
+        forward: true,
+        reason: "Permitted by a recorded approval.",
+      };
+    }
     await write(auditStore, {
       toolName,
       botId,
@@ -201,6 +274,7 @@ export function createComputerGateway(options: ComputerGatewayOptions) {
       filePath,
       pageUrl,
       decision,
+      approvalId,
     });
 
     if (!decision.forward) {
@@ -231,6 +305,7 @@ export function createComputerGateway(options: ComputerGatewayOptions) {
         filePath,
         pageUrl,
         decision,
+        approvalId,
         failure: error instanceof Error ? error.message : "The action failed.",
       });
       throw error;
@@ -675,6 +750,8 @@ async function write(
     decision: PolicyDecision;
     /** Set only when a permitted action was attempted and did not succeed. */
     failure?: string;
+    /** The durable decision that authorized or is waiting on this exact action. */
+    approvalId?: string;
   },
 ) {
   await recordAuditEvent(auditStore, {
@@ -682,9 +759,11 @@ async function write(
     // is that a reader can tell an action that happened from one that was permitted and then did not.
     eventType: entry.failure
       ? "computer.action_failed"
-      : entry.decision.allowed
-        ? "computer.action_allowed"
-        : "computer.action_refused",
+      : entry.decision.approvalRequired
+        ? "computer.action_approval_required"
+        : entry.decision.allowed
+          ? "computer.action_allowed"
+          : "computer.action_refused",
     targetType: "computer",
     targetId: entry.computerId,
     // Only ever a real users row. The audit table has a foreign key to it, so writing the local
@@ -727,6 +806,8 @@ async function write(
         rule: entry.decision.matched,
         /** Present so the trail explains a dry-run row that was recorded as refused but still ran. */
         carriedOut: entry.decision.forward,
+        approvalRequired: entry.decision.approvalRequired,
+        ...(entry.approvalId ? { approvalId: entry.approvalId } : {}),
       },
     },
   });

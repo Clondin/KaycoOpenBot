@@ -37,11 +37,35 @@ All four Intelligence values are required together. Missing any of them stops se
 | `TENANT_PACKAGE_DIR` | `../examples/fintech`              | Tenant package directory, resolved from `server/`.                  |
 | `DEPLOYMENT_ID`      | the tenant package's id            | Names this deployment inside a shared Intelligence project.          |
 | `OPENAI_API_KEY`     | unset                              | Default model key for built-in agents and both shipped Bots.        |
-| `BOT_PROVIDER`       | `openai`                           | Provider for `agent-langgraph`: `openai`, `anthropic`, or `google`. |
+| `BOT_PROVIDER`       | `openai`                           | Provider for `agent-langgraph`: `openai`, `anthropic`, `google`, or `xai`. |
 | `ANTHROPIC_API_KEY`  | unset                              | Anthropic key when `BOT_PROVIDER=anthropic`.                        |
 | `GOOGLE_API_KEY`     | unset                              | Google key when `BOT_PROVIDER=google`.                              |
+| `XAI_API_KEY`        | unset                              | xAI key when `BOT_PROVIDER=xai`; Grok 4.6 is supported.             |
 | `BOT_MODEL`          | provider default from Bot code/env | Model used by the shipped Bots.                                     |
 | `BOT_RESPONSES_API`  | `false`                            | Makes `agent-langgraph` use the OpenAI Responses API.               |
+
+## ChatGPT and Codex accounts
+
+| Variable                    | Default                    | Meaning                                                                 |
+| --------------------------- | -------------------------- | ----------------------------------------------------------------------- |
+| `OPENBOT_CODEX_ENABLED`     | `false`                    | Enables per-user ChatGPT device login and Codex-backed built-in agents. |
+| `CODEX_HOME_ROOT`           | `.openbot/codex-users`     | Durable private root for isolated per-user Codex homes.                 |
+| `CODEX_EXECUTABLE`          | bundled native executable  | Overrides the Codex executable.                                        |
+| `CODEX_PROCESS_IDLE_MS`     | `300000`                   | Stops an unused per-user App Server after this many milliseconds.       |
+| `CODEX_DEFAULT_MODEL`       | account default            | Optional model override for Codex-backed coworkers.                     |
+
+OpenBot sign-in and ChatGPT authorization are deliberately separate. A signed-in OpenBot user opens
+Settings, chooses **Connect ChatGPT**, and completes the device-code flow on OpenAI's site. Codex
+stores the resulting credentials under that user's hashed directory in `CODEX_HOME_ROOT`; the
+credentials are never copied into PostgreSQL or returned to the browser. Built-in coworkers use the
+connected account, while users without one continue to use the deployment's configured model key.
+
+The home root contains live authentication and conversation state. Mount it on durable encrypted
+storage, restrict it to the server process, include it in the deployment's retention policy, and do
+not share it between deployments. Run only one OpenBot server replica against a given home root;
+multiple App Server processes must not concurrently use the same user's Codex home. App Server is an
+experimental Codex integration surface, so pin the bundled `@openai/codex` version and verify an
+upgrade before rolling it out.
 
 ## Authentication
 
@@ -67,7 +91,7 @@ Google OAuth client id and secret must be configured together. If Google OAuth i
 | `COMPUTER_SUPERVISOR_URL`            | Supervisor URL for per-Bot computers. If absent, Bots share `AGENT_COMPUTER_URL`.         |
 | `SUPERVISOR_TOKEN`                   | Bearer token required by the supervisor.                                                  |
 | `AGENT_COMPUTER_ALLOW_PRIVATE_HOSTS` | Local-only private-host browsing when `true`. Cloud metadata addresses are still refused. |
-| `AGENT_COMPUTER_POLICY`              | JSON action policy: `{"mode":"enforce","deny":[...],"allow":[...]}`.                      |
+| `AGENT_COMPUTER_POLICY`              | JSON action policy: `{"mode":"enforce","deny":[...],"approve":[...],"allow":[...]}`.    |
 | `COMPUTER_RUNTIME`                   | Set to `runsc` to run supervised computers under gVisor.                                  |
 
 `agent-computer` also reads:

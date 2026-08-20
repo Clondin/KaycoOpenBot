@@ -36,6 +36,7 @@ const CURRENT = "current";
 export const DEFAULT_ACTION_POLICY: ActionPolicy = {
   mode: "enforce",
   deny: [],
+  approve: [],
   allow: ["true"],
 };
 
@@ -73,6 +74,7 @@ export function createPolicyStore(
             id: CURRENT,
             mode: next.mode,
             deny: next.deny,
+            approve: next.approve ?? [],
             allow: next.allow,
             updatedBy: by ?? null,
             updatedAt: new Date(),
@@ -82,6 +84,7 @@ export function createPolicyStore(
             set: {
               mode: next.mode,
               deny: next.deny,
+              approve: next.approve ?? [],
               allow: next.allow,
               updatedBy: by ?? null,
               updatedAt: new Date(),
@@ -113,6 +116,7 @@ export function createPolicyStore(
       current = {
         mode: row.mode as ActionPolicy["mode"],
         deny: [...row.deny],
+        approve: [...row.approve],
         allow: [...row.allow],
       };
       return "the database";
@@ -124,6 +128,7 @@ function clone(policy: ActionPolicy): ActionPolicy {
   return {
     mode: policy.mode,
     deny: [...policy.deny],
+    approve: [...(policy.approve ?? [])],
     allow: [...policy.allow],
   };
 }
@@ -155,8 +160,12 @@ export function parseActionPolicy(
     };
   }
 
-  const lists: Record<"deny" | "allow", string[]> = { deny: [], allow: [] };
-  for (const key of ["deny", "allow"] as const) {
+  const lists: Record<"deny" | "approve" | "allow", string[]> = {
+    deny: [],
+    approve: [],
+    allow: [],
+  };
+  for (const key of ["deny", "approve", "allow"] as const) {
     const value = candidate[key] ?? [];
     if (!Array.isArray(value) || value.some((v) => typeof v !== "string")) {
       return { ok: false, error: `${key} must be a list of expressions.` };
@@ -164,5 +173,13 @@ export function parseActionPolicy(
     lists[key] = value as string[];
   }
 
-  return { ok: true, policy: { mode, deny: lists.deny, allow: lists.allow } };
+  return {
+    ok: true,
+    policy: {
+      mode,
+      deny: lists.deny,
+      approve: lists.approve,
+      allow: lists.allow,
+    },
+  };
 }

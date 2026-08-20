@@ -52,6 +52,8 @@ export type ComputerClientOptions = {
   /** True on a laptop, where browsing the deployment's own services is the point. */
   allowPrivateHosts?: boolean;
   timeoutMs?: number;
+  /** Backoff used only for observation calls. Acting calls are always attempted once. */
+  safeRetryDelaysMs?: number[];
   fetchImpl?: typeof fetch;
 };
 
@@ -129,6 +131,41 @@ export class StaleSnapshotError extends Error {
   }
 }
 
+/** A person is driving. Waiting is correct; taking a new snapshot is not. */
+export class HumanControlError extends Error {
+  constructor(reason: string) {
+    super(reason);
+    this.name = "HumanControlError";
+  }
+}
+
+const TRANSIENT_STATUSES = new Set([429, 502, 503, 504]);
+
+function isTransientStatus(status: number): boolean {
+  return TRANSIENT_STATUSES.has(status);
+}
+
+async function waitForRetry(
+  delayMs: number,
+  signal?: AbortSignal,
+): Promise<void> {
+  if (signal?.aborted) {
+    throw new ComputerUnavailableError("The action was stopped.");
+  }
+  if (delayMs <= 0) return;
+  await new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(resolve, delayMs);
+    signal?.addEventListener(
+      "abort",
+      () => {
+        clearTimeout(timeout);
+        reject(new ComputerUnavailableError("The action was stopped."));
+      },
+      { once: true },
+    );
+  });
+}
+
 export function createComputerClient(options: ComputerClientOptions) {
   const doFetch = options.fetchImpl ?? fetch;
   /*
@@ -138,6 +175,7 @@ export function createComputerClient(options: ComputerClientOptions) {
    */
   const token = options.token;
   const timeoutMs = options.timeoutMs ?? 45_000;
+  const safeRetryDelaysMs = options.safeRetryDelaysMs ?? [150, 500];
   const base = options.baseUrl.replace(/\/$/, "");
 
   /**
@@ -157,6 +195,7 @@ export function createComputerClient(options: ComputerClientOptions) {
       path: string,
       init?: RequestInit,
       caller?: AbortSignal,
+      safeToRetry = false,
     ): Promise<unknown> {
       // Resolved per call rather than held, because a computer that was reset comes back on a
       // different port and a cached address would point at nothing.
@@ -164,11 +203,6 @@ export function createComputerClient(options: ComputerClientOptions) {
       // Outside the try below on purpose: that catch reports "the computer is not running", which is
       // true of a computer that will not answer and misleading about a supervisor that could not be
       // reached or refused. Those are different operator-facing problems.
-      const target =
-        botId && options.resolveBaseUrl
-          ? (await options.resolveBaseUrl(botId)).replace(/\/$/, "")
-          : base;
-
       // Already stopped before this left: do not dispatch at all. Relying on fetch to reject an
       // aborted signal makes "did the click happen" depend on how quickly the runtime notices, and
       // the answer to "the person pressed Stop first" should never be a race.
@@ -176,77 +210,112 @@ export function createComputerClient(options: ComputerClientOptions) {
         throw new ComputerUnavailableError("The action was stopped.");
       }
 
-      let response: Response;
-      try {
-        response = await doFetch(`${target}${path}`, {
-          ...init,
-          // The Bot's identity, as a header rather than in the path, so the computer's published routes
-          // are unchanged and a caller that does not know which Bot it is still works.
-          headers: {
-            ...(init?.headers as Record<string, string> | undefined),
-            ...(botId ? { "x-openbot-bot-id": botId } : {}),
-            ...(token ? { "x-openbot-computer-token": token } : {}),
-          },
-          /*
-           * Both reasons to give up. The timeout protects the server from a computer that
-           * has stopped answering; `caller` is the person pressing Stop, and it has to reach the
-           * browser or the click they were stopping still lands. Combined rather than chosen between:
-           * whichever fires first ends the request.
-           */
-          signal: caller
-            ? AbortSignal.any([caller, AbortSignal.timeout(timeoutMs)])
-            : AbortSignal.timeout(timeoutMs),
-        });
-      } catch (error) {
-        // Distinguished from a failed page load on purpose: this one means the computer itself is not
-        // there, which is an operator problem, not something the person asking can fix by rephrasing.
-        throw new ComputerUnavailableError(
-          error instanceof Error && error.name === "TimeoutError"
-            ? "The assistant's computer did not respond in time."
-            : "The assistant's computer is not running.",
-        );
-      }
+      const attempts = safeToRetry ? safeRetryDelaysMs.length + 1 : 1;
+      for (let attempt = 0; attempt < attempts; attempt += 1) {
+        if (attempt > 0) {
+          await waitForRetry(safeRetryDelaysMs[attempt - 1] ?? 0, caller);
+        }
 
-      const body = (await response.json().catch(() => null)) as Record<
-        string,
-        unknown
-      > | null;
+        let target: string;
+        try {
+          target =
+            botId && options.resolveBaseUrl
+              ? (await options.resolveBaseUrl(botId)).replace(/\/$/, "")
+              : base;
+        } catch (error) {
+          if (attempt + 1 < attempts) continue;
+          throw error;
+        }
 
-      if (!response.ok) {
-        const detail =
-          typeof body?.error === "string"
-            ? body.error
-            : `HTTP ${response.status}`;
-        // A stale ref is fixed by taking a new snapshot, so it is not reported as the computer being
-        // unavailable.
-        if (response.status === 409) {
-          throw new StaleSnapshotError(detail);
-        }
-        // These two must not be collapsed: path confinement and ordinary bad requests lead to
-        // different next actions.
-        // 403 is the path confinement: a boundary, and the answer will never change.
-        if (response.status === 403) {
-          throw new WorkspaceRefusedError(detail);
-        }
-        // 400 is an ordinary bad request: no such file, a folder where a file was wanted, too large. A
-        // different request would succeed, which is exactly what the Bot needs to understand.
-        if (response.status === 400) {
-          throw new WorkspaceRequestError(detail);
-        }
-        /*
-         * A locator that never resolved is not an outage. Playwright reports it as a timeout whose
-         * message is a call log naming the selector, which is how "that button is not there" ended up
-         * indistinguishable from "the computer is down".
-         */
-        if (/waiting for locator|Timeout .* exceeded/i.test(detail)) {
-          const ref = detail.match(/aria-ref=([A-Za-z0-9_-]+)/)?.[1];
-          throw new ElementNotFoundError(
-            `${ref ? `Element ${ref} is` : "That element is"} not on the page any more. Take a fresh snapshot and use the refs from it.`,
+        let response: Response;
+        try {
+          response = await doFetch(`${target}${path}`, {
+            ...init,
+            // The Bot's identity, as a header rather than in the path, so the computer's published routes
+            // are unchanged and a caller that does not know which Bot it is still works.
+            headers: {
+              ...(init?.headers as Record<string, string> | undefined),
+              ...(botId ? { "x-openbot-bot-id": botId } : {}),
+              ...(token ? { "x-openbot-computer-token": token } : {}),
+            },
+            /*
+             * Both reasons to give up. The timeout protects the server from a computer that
+             * has stopped answering; `caller` is the person pressing Stop, and it has to reach the
+             * browser or the click they were stopping still lands. Combined rather than chosen between:
+             * whichever fires first ends the request.
+             */
+            signal: caller
+              ? AbortSignal.any([caller, AbortSignal.timeout(timeoutMs)])
+              : AbortSignal.timeout(timeoutMs),
+          });
+        } catch (error) {
+          if (caller?.aborted) {
+            throw new ComputerUnavailableError("The action was stopped.");
+          }
+          if (attempt + 1 < attempts) continue;
+          // Distinguished from a failed page load on purpose: this one means the computer itself is not
+          // there, which is an operator problem, not something the person asking can fix by rephrasing.
+          throw new ComputerUnavailableError(
+            error instanceof Error && error.name === "TimeoutError"
+              ? "The assistant's computer did not respond in time."
+              : "The assistant's computer is not running.",
           );
         }
-        throw new ComputerUnavailableError(detail);
+
+        const body = (await response.json().catch(() => null)) as Record<
+          string,
+          unknown
+        > | null;
+
+        if (!response.ok) {
+          if (
+            safeToRetry &&
+            attempt + 1 < attempts &&
+            isTransientStatus(response.status)
+          ) {
+            continue;
+          }
+          const detail =
+            typeof body?.error === "string"
+              ? body.error
+              : `HTTP ${response.status}`;
+          // A stale ref is fixed by taking a new snapshot, so it is not reported as the computer being
+          // unavailable.
+          if (response.status === 423 || body?.code === "human_control") {
+            throw new HumanControlError(detail);
+          }
+          if (response.status === 409 || body?.code === "stale_snapshot") {
+            throw new StaleSnapshotError(detail);
+          }
+          // These two must not be collapsed: path confinement and ordinary bad requests lead to
+          // different next actions.
+          // 403 is the path confinement: a boundary, and the answer will never change.
+          if (response.status === 403) {
+            throw new WorkspaceRefusedError(detail);
+          }
+          // 400 is an ordinary bad request: no such file, a folder where a file was wanted, too large. A
+          // different request would succeed, which is exactly what the Bot needs to understand.
+          if (response.status === 400) {
+            throw new WorkspaceRequestError(detail);
+          }
+          /*
+           * A locator that never resolved is not an outage. Playwright reports it as a timeout whose
+           * message is a call log naming the selector, which is how "that button is not there" ended up
+           * indistinguishable from "the computer is down".
+           */
+          if (/waiting for locator|Timeout .* exceeded/i.test(detail)) {
+            const ref = detail.match(/aria-ref=([A-Za-z0-9_-]+)/)?.[1];
+            throw new ElementNotFoundError(
+              `${ref ? `Element ${ref} is` : "That element is"} not on the page any more. Take a fresh snapshot and use the refs from it.`,
+            );
+          }
+          throw new ComputerUnavailableError(detail);
+        }
+        return body;
       }
-      return body;
+      throw new ComputerUnavailableError(
+        "The assistant's computer did not respond in time.",
+      );
     }
 
     async function post(
@@ -268,7 +337,7 @@ export function createComputerClient(options: ComputerClientOptions) {
     return {
       async status(botId: string): Promise<ComputerStatus> {
         try {
-          await call("/health");
+          await call("/health", undefined, undefined, true);
           return { botId, state: "ready" };
         } catch (error) {
           return {
@@ -296,16 +365,26 @@ export function createComputerClient(options: ComputerClientOptions) {
       },
 
       async screenshot(): Promise<ScreenshotResult> {
-        return (await call("/screenshot")) as ScreenshotResult;
+        return (await call(
+          "/screenshot",
+          undefined,
+          undefined,
+          true,
+        )) as ScreenshotResult;
       },
 
       /** The current page as text. No navigation, so no target check applies. */
       async read(): Promise<ReadResult> {
-        return (await call("/read")) as ReadResult;
+        return (await call("/read", undefined, undefined, true)) as ReadResult;
       },
 
       async snapshot(): Promise<SnapshotResult> {
-        return (await call("/snapshot", { method: "POST" })) as SnapshotResult;
+        return (await call(
+          "/snapshot",
+          { method: "POST" },
+          undefined,
+          true,
+        )) as SnapshotResult;
       },
 
       /**
@@ -346,7 +425,16 @@ export function createComputerClient(options: ComputerClientOptions) {
        * the gateway decides whether this Bot may touch it. Two questions, neither answered in this file.
        */
       async readFile(input: ReadFileInput): Promise<ReadFileResult> {
-        return (await post("/files/read", input)) as ReadFileResult;
+        return (await call(
+          "/files/read",
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(input),
+          },
+          undefined,
+          true,
+        )) as ReadFileResult;
       },
 
       async writeFile(input: WriteFileInput): Promise<WriteFileResult> {
@@ -354,12 +442,26 @@ export function createComputerClient(options: ComputerClientOptions) {
       },
 
       async listFiles(input: ListFilesInput): Promise<ListFilesResult> {
-        return (await post("/files/list", input)) as ListFilesResult;
+        return (await call(
+          "/files/list",
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(input),
+          },
+          undefined,
+          true,
+        )) as ListFilesResult;
       },
 
       /** Who has the wheel, and whether the Bot is waiting for a person. */
       async control(): Promise<ControlState> {
-        return (await call("/control")) as ControlState;
+        return (await call(
+          "/control",
+          undefined,
+          undefined,
+          true,
+        )) as ControlState;
       },
 
       async requestControl(reason: string): Promise<ControlState> {
@@ -393,7 +495,9 @@ export function createComputerClient(options: ComputerClientOptions) {
        */
       /** The computers this process holds, running or not. */
       async computers(): Promise<{ computers: ComputerProfile[] }> {
-        return (await call("/computers")) as { computers: ComputerProfile[] };
+        return (await call("/computers", undefined, undefined, true)) as {
+          computers: ComputerProfile[];
+        };
       },
 
       /** Stop the browser and keep what it knows. */
