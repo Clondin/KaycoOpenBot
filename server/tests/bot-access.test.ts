@@ -73,6 +73,10 @@ describe("the computer surface", () => {
   function app(actorId: string, role: "user" | "admin" = "user") {
     const reached: string[] = [];
     const gateway = {
+      computers: async () => {
+        reached.push("computers:list");
+        return { isolation: "per-bot", computers: [] };
+      },
       resetComputer: async (_c: string, botId: string) => {
         reached.push(`reset:${botId}`);
         return { reset: true, botId };
@@ -157,6 +161,30 @@ describe("the computer surface", () => {
 
     expect(response.status).toBe(200);
     expect(reached).toEqual(["reset:sales"]);
+  });
+
+  test("lets an administrator list all computers through the collection placeholder", async () => {
+    const { hono, reached } = app("someone-else", "admin");
+    const response = await hono.request(
+      "http://t/api/computers/openbot-computer/computers",
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      isolation: "per-bot",
+      computers: [],
+    });
+    expect(reached).toEqual(["computers:list"]);
+  });
+
+  test("keeps the deployment-wide computer list administrator-only", async () => {
+    const { hono, reached } = app("owner");
+    const response = await hono.request(
+      "http://t/api/computers/openbot-computer/computers",
+    );
+
+    expect(response.status).toBe(403);
+    expect(reached).toEqual([]);
   });
 
   test("says nothing about whether that Bot exists", async () => {

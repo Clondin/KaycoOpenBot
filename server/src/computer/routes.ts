@@ -48,6 +48,24 @@ export function createComputerRoutes(
   const humanFileBase64Limit = Math.ceil((10 * 1024 * 1024 * 4) / 3) + 4;
 
   /**
+   * The deployment-wide computer list is an administrator collection, not a Bot resource.
+   *
+   * It must be registered before the per-Bot access middleware below. The admin page uses a
+   * placeholder path id because the list has no natural Bot id; sending that placeholder through
+   * `canUseBot` made the page answer "There is no such Bot" before it could list anything, which in
+   * turn left an operator unable to stop the browser occupying a constrained host's last slot.
+   */
+  routes.get("/:botId/computers", requireUser, async (context) => {
+    const denied = requireAdmin(context);
+    if (denied) return denied;
+    try {
+      return context.json(await gateway.computers());
+    } catch (error) {
+      return context.json({ error: describe(error) }, statusFor(error));
+    }
+  });
+
+  /**
    * Every route under a Bot id, in one place.
    *
    * The Bot travels in the path, so each route would otherwise have to remember to ask, and the one
@@ -231,21 +249,6 @@ export function createComputerRoutes(
       ),
     ),
   );
-
-  /**
-   * The computers, for the admin surface.
-   *
-   * Not per-Bot in the path the way the acting routes are: this asks the computer what it holds, and
-   * it holds a list. `:botId` is still there because every route under this router has it and the
-   * gateway wants somebody to attribute the call to.
-   */
-  routes.get("/:botId/computers", async (context) => {
-    try {
-      return context.json(await gateway.computers());
-    } catch (error) {
-      return context.json({ error: describe(error) }, statusFor(error));
-    }
-  });
 
   /** Stop the browser, keep the logins. */
   routes.post("/:botId/computers/stop", (context) =>

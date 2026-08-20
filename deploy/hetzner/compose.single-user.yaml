@@ -37,9 +37,11 @@ services:
 
   supervisor:
     environment:
-      COMPUTER_MEMORY_BYTES: 2147483648
-      COMPUTER_NANO_CPUS: 1000000000
-      COMPUTER_PIDS_LIMIT: 512
-      COMPUTER_MAX_RUNNING: 1
+      # Keep the small-host defaults conservative, while allowing an operator to temporarily trade
+      # per-browser headroom for a second computer without maintaining a private Compose patch.
+      COMPUTER_MEMORY_BYTES: ${COMPUTER_MEMORY_BYTES:-2147483648}
+      COMPUTER_NANO_CPUS: ${COMPUTER_NANO_CPUS:-1000000000}
+      COMPUTER_PIDS_LIMIT: ${COMPUTER_PIDS_LIMIT:-512}
+      COMPUTER_MAX_RUNNING: ${COMPUTER_MAX_RUNNING:-1}
     mem_limit: 256m
     cpus: 0.25

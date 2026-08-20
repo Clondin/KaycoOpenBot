@@ -26,9 +26,15 @@ For one-person testing, a new Ashburn `cpx21` (3 shared vCPUs, 4 GB RAM, 80 GB d
 stack with `compose.single-user.yaml`. Configure 4 GB of swap during provisioning. Swap protects
 image builds and brief memory spikes; it does not make the server perform like an 8 GB host.
 
-The overlay caps the platform services and gives the browser computer 2 GB RAM and one CPU. It also
-enforces a maximum of one running Bot computer. Multiple Bot profiles can remain saved, but one must
-be stopped before another can start.
+The overlay caps the platform services and defaults the browser computer to 2 GB RAM and one CPU. It
+also defaults to a maximum of one running Bot computer. Multiple Bot profiles can remain saved, but
+one must be stopped before another can start.
+
+Those browser defaults can be overridden in `env.production`. For a temporary two-computer alpha
+test on the 4 GB host, use `COMPUTER_MAX_RUNNING=2` and reduce
+`COMPUTER_MEMORY_BYTES=1610612736` (1.5 GB per browser). Monitor memory and swap while both are active.
+This trades browser headroom for concurrency and is not the organization profile: use at least an
+8 GB host for sustained two-computer work, and the 32 GB dedicated profile above for a team.
 
 Expected impact compared with the 32 GB organization profile:
 
