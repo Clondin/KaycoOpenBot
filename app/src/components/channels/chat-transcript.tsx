@@ -1009,8 +1009,10 @@ type ToolItem = Extract<VisibleChatItem, { kind: "tool" }>;
 const GROUPABLE_TOOLS = new Set([
   "computer_navigate",
   "computer_read",
+  "computer_extract_table",
   "computer_observe",
   "computer_snapshot",
+  "computer_fill_form",
   "computer_type",
   "computer_click",
   "computer_key",
@@ -1022,6 +1024,83 @@ const GROUPABLE_TOOLS = new Set([
 
 function isGroupableTool(name: string): boolean {
   return GROUPABLE_TOOLS.has(name) || name.startsWith("mcp__");
+}
+
+function parsedObject(value: string | undefined): Record<string, unknown> {
+  if (!value) return {};
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return parsed && typeof parsed === "object"
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function toolGroupSummary(tools: readonly ToolItem[]): string {
+  let fields = 0;
+  let checks = 0;
+  let files = 0;
+  let totalMs = 0;
+  let actionCount = 0;
+  let clicked = "";
+  let opened = "";
+  let pressed = "";
+
+  for (const tool of tools) {
+    const name = tool.toolCall.function.name;
+    const result = parsedObject(tool.result);
+    const args = parsedObject(tool.toolCall.function.arguments);
+    const elapsed = result.clientElapsedMs ?? result.elapsedMs;
+    if (typeof elapsed === "number") totalMs += elapsed;
+    if (name === "computer_fill_form") {
+      const filled =
+        typeof result.filled === "number"
+          ? result.filled
+          : Array.isArray(args.fields)
+            ? args.fields.length
+            : 1;
+      fields += filled;
+      actionCount += filled;
+    } else {
+      actionCount += 1;
+    }
+    if (name === "computer_type") fields += 1;
+    else if (name === "computer_click") {
+      const element = result.element as { name?: unknown } | undefined;
+      if (typeof element?.name === "string") clicked = element.name;
+    } else if (name === "computer_navigate") {
+      if (typeof result.title === "string") opened = result.title;
+    } else if (name === "computer_key") {
+      if (typeof result.key === "string") pressed = result.key;
+      else if (typeof args.key === "string") pressed = args.key;
+    } else if (
+      name === "computer_read" ||
+      name === "computer_observe" ||
+      name === "computer_snapshot" ||
+      name === "computer_extract_table"
+    ) {
+      checks += 1;
+    } else if (name.includes("_file") || name === "computer_list_files") {
+      files += 1;
+    }
+  }
+
+  const parts: string[] = [];
+  if (opened) parts.push(`Opened ${opened}`);
+  if (fields) parts.push(`filled ${fields} field${fields === 1 ? "" : "s"}`);
+  if (clicked) parts.push(`clicked “${clicked}”`);
+  if (pressed) parts.push(`pressed ${pressed}`);
+  if (checks)
+    parts.push(
+      `checked the page ${checks > 1 ? `${checks} times` : ""}`.trim(),
+    );
+  if (files)
+    parts.push(`worked with ${files} file step${files === 1 ? "" : "s"}`);
+  const summary =
+    parts.slice(0, 3).join(", ") || `Completed ${tools.length} steps`;
+  return `${summary} · ${actionCount} actions${totalMs ? ` · ${Math.max(1, Math.round(totalMs / 1000))}s` : ""}`;
 }
 
 /**
@@ -1040,6 +1119,12 @@ function TranscriptToolGroup({
   delay: number;
 }) {
   const running = tools.some((tool) => tool.result === undefined);
+  const failed = tools.some((tool) => {
+    const result = parsedObject(tool.result);
+    return (
+      result.ok === false || (tool.result ? looksFailed(tool.result) : false)
+    );
+  });
   const lines = tools.map((tool) => (
     <TranscriptToolCall
       args={tool.toolCall.function.arguments}
@@ -1051,7 +1136,7 @@ function TranscriptToolGroup({
     />
   ));
 
-  if (tools.length === 1 || running) {
+  if (tools.length === 1 || running || failed) {
     return (
       <Arriving delay={delay}>
         <div className="flex w-full min-w-0 flex-col">{lines}</div>
@@ -1070,7 +1155,7 @@ function TranscriptToolGroup({
             ▸
           </span>
           <span className="text-muted-foreground text-sm">
-            Did {tools.length} things
+            {toolGroupSummary(tools)}
           </span>
         </summary>
         <div className="mt-1 min-w-0 border-l pl-3">{lines}</div>

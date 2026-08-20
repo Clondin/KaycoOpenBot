@@ -3,8 +3,13 @@ import { pageCoordinates } from "./take-the-wheel";
 import {
   type ComputerStreamMessage,
   sendComputerStreamInput,
+  setComputerStreamMode,
   subscribeToComputerStream,
 } from "./computer-stream";
+import {
+  reportComputerActivity,
+  updateComputerActivity,
+} from "@/lib/copilot/computer-activity";
 
 function modifierBits(event: {
   altKey: boolean;
@@ -35,6 +40,7 @@ type Props = {
   onControl?: (state: ControlState) => void;
   onPage?: (page: { url: string; title?: string }) => void;
   onFrame?: () => void;
+  mode?: "compact" | "full";
 };
 
 type ActionMarker = Extract<ComputerStreamMessage, { type: "action" }>;
@@ -53,6 +59,7 @@ export function LiveScreen({
   onControl,
   onPage,
   onFrame,
+  mode = "compact",
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const frameSize = useRef<{ width: number; height: number } | null>(null);
@@ -63,6 +70,7 @@ export function LiveScreen({
     "connecting" | "connected" | "reconnecting"
   >("connecting");
   const [marker, setMarker] = useState<ActionMarker | null>(null);
+  const [announcement, setAnnouncement] = useState("");
 
   useEffect(() => {
     let live = true;
@@ -99,8 +107,32 @@ export function LiveScreen({
         }
         if (message.type === "action") {
           setMarker(message);
+          setAnnouncement(
+            `Assistant ${message.action === "type" ? "filled a field" : message.action === "key" ? "pressed a key" : message.action === "scroll" ? "scrolled the page" : "clicked a control"}.`,
+          );
           clearTimeout(markerTimer);
           markerTimer = setTimeout(() => setMarker(null), 900);
+          return;
+        }
+        if (message.type === "download") {
+          const activity = reportComputerActivity(computerId, {
+            stage: "reading",
+            label: message.path
+              ? `Saving ${message.path}`
+              : "Saving a download",
+          });
+          updateComputerActivity(activity, {
+            stage: message.error ? "error" : "complete",
+            label:
+              message.error ??
+              (message.path ? `Downloaded ${message.path}` : "Download saved"),
+          });
+          setAnnouncement(
+            message.error ??
+              (message.path
+                ? `Downloaded ${message.path}.`
+                : "Download saved."),
+          );
           return;
         }
 
@@ -112,9 +144,12 @@ export function LiveScreen({
           height: message.height ?? 800,
         };
         try {
-          const binary = Uint8Array.from(atob(message.data), (character) =>
-            character.charCodeAt(0),
-          );
+          const binary =
+            typeof message.data === "string"
+              ? Uint8Array.from(atob(message.data), (character) =>
+                  character.charCodeAt(0),
+                )
+              : new Uint8Array(message.data);
           const bitmap = await createImageBitmap(
             new Blob([binary], { type: "image/jpeg" }),
           );
@@ -132,12 +167,13 @@ export function LiveScreen({
         }
       },
     );
+    setComputerStreamMode(computerId, mode);
     return () => {
       live = false;
       clearTimeout(markerTimer);
       unsubscribe();
     };
-  }, [computerId]);
+  }, [computerId, mode]);
 
   const send = useCallback(
     (message: Record<string, unknown>) => {
@@ -259,6 +295,9 @@ export function LiveScreen({
           style={markerStyle}
         />
       ) : null}
+      <span className="sr-only" aria-live="polite" role="status">
+        {announcement}
+      </span>
       {connection !== "connected" ? (
         <span className="absolute bottom-2 left-2 rounded-full bg-black/70 px-2 py-1 text-xs text-white">
           {connection === "reconnecting" ? "Reconnecting…" : "Connecting…"}

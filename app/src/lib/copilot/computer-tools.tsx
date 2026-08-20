@@ -21,6 +21,58 @@ import { waitForApprovalDecision } from "../runs/approvals";
 /** What every computer call returns to the model: either the result, or a reason it did not happen. */
 type ToolOutcome = Record<string, unknown> & { ok: boolean };
 
+type ObservedElement = { ref: string; role?: string; name?: string };
+type RememberedObservation = {
+  snapshotId: number;
+  elements: Map<string, ObservedElement>;
+};
+
+const observations = new Map<string, RememberedObservation>();
+const failedActions = new Map<string, string>();
+const RETRY_GUARDED_ACTIONS = new Set(["/click", "/type", "/key"]);
+
+function requestBody(init?: RequestInit): Record<string, unknown> {
+  if (typeof init?.body !== "string") return {};
+  try {
+    const parsed = JSON.parse(init.body) as unknown;
+    return parsed && typeof parsed === "object"
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function rememberObservation(botId: string, outcome: ToolOutcome): void {
+  const value = outcome.observation ?? outcome;
+  if (!value || typeof value !== "object") return;
+  const observation = value as Record<string, unknown>;
+  if (
+    typeof observation.snapshotId !== "number" ||
+    !Array.isArray(observation.elements)
+  ) {
+    return;
+  }
+  const elements = new Map<string, ObservedElement>();
+  for (const candidate of observation.elements) {
+    if (!candidate || typeof candidate !== "object") continue;
+    const element = candidate as Record<string, unknown>;
+    if (typeof element.ref !== "string") continue;
+    elements.set(element.ref, {
+      ref: element.ref,
+      ...(typeof element.role === "string" ? { role: element.role } : {}),
+      ...(typeof element.name === "string" ? { name: element.name } : {}),
+    });
+  }
+  observations.set(botId, { snapshotId: observation.snapshotId, elements });
+  failedActions.delete(botId);
+}
+
+function actionKey(path: string, body: Record<string, unknown>): string | null {
+  if (!RETRY_GUARDED_ACTIONS.has(path)) return null;
+  return `${path}:${String(body.snapshotId ?? "")}:${String(body.ref ?? "")}:${path === "/key" ? String(body.key ?? "") : ""}`;
+}
+
 /**
  * Human-assistance wait window. Long enough for a user to return, finite so the run can unblock.
  */
@@ -55,20 +107,47 @@ async function callComputer(
   signal?: AbortSignal,
 ): Promise<ToolOutcome> {
   // Announce before the call so the screen can open while the action is running.
-  const progress = progressFor(path);
+  const bodyInput = requestBody(init);
+  const progress = progressFor(botId, path, bodyInput);
   const activity = reportComputerActivity(botId, progress);
   const startedAt = performance.now();
   const finish = (outcome: ToolOutcome): ToolOutcome => {
     const elapsedMs = Math.round(performance.now() - startedAt);
+    if (outcome.ok) rememberObservation(botId, outcome);
     updateComputerActivity(activity, {
       stage: outcome.ok ? "complete" : "error",
       label: outcome.ok
-        ? `${progress.label} — done`
+        ? completedLabel(path, progress.label, outcome)
         : String(outcome.reason ?? "Computer step failed"),
       elapsedMs,
+      ...(typeof outcome.code === "string" ? { code: outcome.code } : {}),
+      ...(typeof outcome.maxRunning === "number"
+        ? { maxRunning: outcome.maxRunning }
+        : {}),
+      ...(Array.isArray(outcome.activeComputers)
+        ? {
+            activeComputers: outcome.activeComputers.filter(
+              (entry): entry is { botId: string; startedAt?: string } =>
+                !!entry &&
+                typeof entry === "object" &&
+                typeof (entry as { botId?: unknown }).botId === "string",
+            ),
+          }
+        : {}),
     });
-    return outcome;
+    return { ...outcome, clientElapsedMs: elapsedMs };
   };
+  const failureKey = actionKey(path, bodyInput);
+  if (failureKey && failedActions.get(botId) === failureKey) {
+    return finish({
+      ok: false,
+      code: "refresh_required",
+      staleRefs: true,
+      needsObservation: true,
+      reason:
+        "That exact action already failed on this snapshot. Observe the page and use a fresh ref before trying again.",
+    });
+  }
   const request = async (approvalId?: string) => {
     const headers = new Headers(init?.headers);
     if (task.runId) headers.set("X-OpenBot-Run-Id", task.runId);
@@ -148,8 +227,16 @@ async function callComputer(
   }
 
   if (!response.ok) {
+    if (
+      failureKey &&
+      response.status === 409 &&
+      body?.code !== "human_control"
+    ) {
+      failedActions.set(botId, failureKey);
+    }
     return finish({
       ok: false,
+      ...(body ?? {}),
       reason: (body?.error as string) ?? "That did not work.",
       // Preserve refusal/stale-ref/control distinctions for the model's next step.
       ...(response.status === 403
@@ -168,20 +255,51 @@ async function callComputer(
   return finish({ ok: true, ...(body ?? {}) });
 }
 
-function progressFor(path: string): {
+function progressFor(
+  botId: string,
+  path: string,
+  body: Record<string, unknown>,
+): {
   stage: "starting" | "opening" | "reading" | "acting" | "waiting";
   label: string;
 } {
   if (path === "/warm")
     return { stage: "starting", label: "Starting the computer" };
-  if (path === "/navigate")
-    return { stage: "opening", label: "Opening the page" };
-  if (path === "/observe" || path === "/snapshot" || path === "/read")
+  if (path === "/navigate") {
+    const url = typeof body.url === "string" ? body.url : "";
+    let site = "the page";
+    try {
+      site = new URL(url).hostname.replace(/^www\./, "") || site;
+    } catch {
+      // The server will provide the useful validation error.
+    }
+    return { stage: "opening", label: `Opening ${site}` };
+  }
+  if (
+    path === "/observe" ||
+    path === "/snapshot" ||
+    path === "/read" ||
+    path === "/table"
+  )
     return { stage: "reading", label: "Checking the page" };
+  const observed = observations.get(botId);
+  const ref = typeof body.ref === "string" ? body.ref : "";
+  const target = observed?.elements.get(ref)?.name?.trim();
   if (path === "/click")
-    return { stage: "acting", label: "Selecting a control" };
-  if (path === "/type") return { stage: "acting", label: "Filling in a field" };
-  if (path === "/key") return { stage: "acting", label: "Pressing a key" };
+    return {
+      stage: "acting",
+      label: target ? `Clicking “${target}”` : "Clicking a control",
+    };
+  if (path === "/type")
+    return {
+      stage: "acting",
+      label: target ? `Filling “${target}”` : "Filling in a field",
+    };
+  if (path === "/key")
+    return {
+      stage: "acting",
+      label: `Pressing ${typeof body.key === "string" ? body.key : "a key"}${target ? ` in “${target}”` : ""}`,
+    };
   if (path === "/scroll")
     return { stage: "acting", label: "Moving through the page" };
   if (path.includes("/control"))
@@ -189,6 +307,20 @@ function progressFor(path: string): {
   if (path.includes("/files"))
     return { stage: "reading", label: "Working with a file" };
   return { stage: "acting", label: "Using the computer" };
+}
+
+function completedLabel(
+  path: string,
+  runningLabel: string,
+  outcome: ToolOutcome,
+): string {
+  const element = outcome.element as { name?: unknown } | undefined;
+  const name = typeof element?.name === "string" ? element.name.trim() : "";
+  if (path === "/click" && name) return `Clicked “${name}”`;
+  if (path === "/type" && name) return `Filled “${name}”`;
+  if (path === "/key" && typeof outcome.key === "string")
+    return `Pressed ${outcome.key}${name ? ` in “${name}”` : ""}`;
+  return `${runningLabel} — done`;
 }
 
 /** What a computer tool's render can read back out of its own result. */
@@ -201,6 +333,7 @@ type ComputerOutcome = {
   reason?: string;
   staleRefs?: boolean;
   elements?: unknown[];
+  tables?: unknown[];
   element?: { role?: string; name?: string };
 };
 
@@ -307,6 +440,8 @@ export function ComputerTools() {
             url: result.url,
             text: result.text,
             truncated: result.truncated,
+            observation: result.observation,
+            clientElapsedMs: result.clientElapsedMs,
           }
         : result;
     },
@@ -355,6 +490,37 @@ export function ComputerTools() {
   });
 
   useFrontendTool({
+    name: "computer_extract_table",
+    description:
+      "Extract visible HTML tables and accessible data grids into rows and columns. Use this instead " +
+      "of reading or taking a screenshot when the answer is in a table. Results are bounded; click " +
+      "the page's next control and call this again for another page.",
+    parameters: z.object({}),
+    handler: async () => callComputer(bot.current, run.current, "/table"),
+    render: ({ result, status }) => {
+      const outcome = outcomeOf(result);
+      const tables = Array.isArray(outcome.tables) ? outcome.tables : [];
+      const rows = tables.reduce<number>((total, table) => {
+        if (!table || typeof table !== "object") return total;
+        const value = (table as { rows?: unknown }).rows;
+        return total + (Array.isArray(value) ? value.length : 0);
+      }, 0);
+      return (
+        <ActionLine
+          running={status !== "complete"}
+          label="Extracted table data"
+          detail={
+            didNotWork(outcome)
+              ? outcome.reason
+              : `${rows} row${rows === 1 ? "" : "s"} from ${tables.length} table${tables.length === 1 ? "" : "s"}`
+          }
+          failed={didNotWork(outcome)}
+        />
+      );
+    },
+  });
+
+  useFrontendTool({
     name: "computer_observe",
     description:
       "Get compact page text, the most useful actionable controls, and what changed in one call. " +
@@ -374,6 +540,126 @@ export function ComputerTools() {
     handler: async () =>
       callComputer(bot.current, run.current, "/snapshot", { method: "POST" }),
     render: () => null,
+  });
+
+  useFrontendTool({
+    name: "computer_fill_form",
+    description:
+      "Fill several ordinary, non-secret form fields in one tool call. This is faster than one model " +
+      "round trip per field. Use refs from the same recent observation; each field is still checked " +
+      "and audited separately. Never put passwords, card numbers, or one-time codes here—request a " +
+      "secret or ask the person to take control instead.",
+    parameters: z.object({
+      fields: z
+        .array(
+          z.object({
+            ref: z.string().describe("Field ref from the recent observation"),
+            snapshotId: z.number().describe("Snapshot id for the field ref"),
+            text: z.string().describe("Ordinary non-secret text to enter"),
+            name: z
+              .string()
+              .optional()
+              .describe("Visible field label, used to follow a re-render"),
+          }),
+        )
+        .min(1)
+        .max(20),
+      submit: z
+        .boolean()
+        .optional()
+        .describe("Press Enter after the final field is filled"),
+    }),
+    handler: async (
+      input: {
+        fields: {
+          ref: string;
+          snapshotId: number;
+          text: string;
+          name?: string;
+        }[];
+        submit?: boolean;
+      },
+      { signal }: { signal?: AbortSignal } = {},
+    ) => {
+      const botId = bot.current;
+      const initial = observations.get(botId);
+      const targets = input.fields.map((field) => {
+        const known = initial?.elements.get(field.ref);
+        return {
+          role: known?.role,
+          name: field.name?.trim() || known?.name?.trim(),
+        };
+      });
+      let filled = 0;
+      let latest: ToolOutcome | undefined;
+      for (let index = 0; index < input.fields.length; index += 1) {
+        const field = input.fields[index];
+        if (!field) continue;
+        let ref = field.ref;
+        let snapshotId = field.snapshotId;
+        if (index > 0) {
+          const current = observations.get(botId);
+          const target = targets[index];
+          const match = [...(current?.elements.values() ?? [])].find(
+            (candidate) =>
+              !!target?.name &&
+              candidate.name?.trim() === target.name &&
+              (!target.role || candidate.role === target.role),
+          );
+          if (!current || !match) {
+            return {
+              ok: false,
+              filled,
+              needsObservation: true,
+              reason: `Filled ${filled} field${filled === 1 ? "" : "s"}, then could not find “${target?.name ?? "the next field"}” after the page changed. Observe the page before continuing.`,
+            };
+          }
+          ref = match.ref;
+          snapshotId = current.snapshotId;
+        }
+        latest = await callComputer(
+          botId,
+          run.current,
+          "/type",
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              ref,
+              snapshotId,
+              text: field.text,
+              submit:
+                input.submit === true && index === input.fields.length - 1,
+            }),
+          },
+          signal,
+        );
+        if (!latest.ok) return { ...latest, filled };
+        filled += 1;
+      }
+      return { ...(latest ?? { ok: true }), ok: true, filled };
+    },
+    render: ({ args, result, status }) => {
+      const outcome = outcomeOf(result) as ComputerOutcome & {
+        filled?: unknown;
+      };
+      const expected = Array.isArray(args?.fields) ? args.fields.length : 0;
+      const filled =
+        typeof outcome.filled === "number" ? outcome.filled : expected;
+      return (
+        <ActionLine
+          running={status !== "complete"}
+          label="Filled form"
+          detail={
+            didNotWork(outcome)
+              ? String(outcome.reason ?? "")
+              : `${filled} field${filled === 1 ? "" : "s"}${args?.submit === true ? " and submitted" : ""}`
+          }
+          refused={outcome.refused === true}
+          failed={didNotWork(outcome)}
+        />
+      );
+    },
   });
 
   useFrontendTool({

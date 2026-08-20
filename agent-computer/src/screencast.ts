@@ -41,7 +41,8 @@ export type InputMessage =
       text?: string;
       modifiers?: number;
     }
-  | { type: "text"; text: string };
+  | { type: "text"; text: string }
+  | { type: "viewer"; mode: "compact" | "full" };
 
 /** What we send back. */
 export type FrameMessage = {
@@ -93,6 +94,8 @@ export type Screencast = {
   stop: () => Promise<void>;
   /** Apply one thing the person did. */
   send: (message: InputMessage) => Promise<void>;
+  /** Change stream size without opening another socket or CDP session. */
+  resize: (mode: "compact" | "full") => Promise<void>;
 };
 
 /**
@@ -109,6 +112,7 @@ export async function startScreencast(
 ): Promise<Screencast> {
   const client: CDPSession = await page.context().newCDPSession(page);
   let stopped = false;
+  let mode: "compact" | "full" = "compact";
 
   type ScreencastFrame = {
     data: string;
@@ -133,14 +137,24 @@ export async function startScreencast(
     });
   });
 
-  await client.send("Page.startScreencast", {
-    format: "jpeg",
-    quality: options.quality ?? 70,
-    maxWidth: options.maxWidth ?? 1280,
-    maxHeight: options.maxHeight ?? 800,
-    // One frame per change, not per interval. Chrome decides when something moved.
-    everyNthFrame: 1,
-  });
+  const start = (next: "compact" | "full") =>
+    client.send("Page.startScreencast", {
+      format: "jpeg",
+      quality: options.quality ?? (next === "compact" ? 60 : 75),
+      maxWidth: options.maxWidth ?? (next === "compact" ? 800 : 1280),
+      maxHeight: options.maxHeight ?? (next === "compact" ? 500 : 800),
+      // One frame per change, not per interval. Chrome decides when something moved.
+      everyNthFrame: 1,
+    });
+
+  await start(mode);
+
+  const resize = async (next: "compact" | "full") => {
+    if (stopped || mode === next) return;
+    mode = next;
+    await client.send("Page.stopScreencast").catch(() => undefined);
+    if (!stopped) await start(mode);
+  };
 
   return {
     async stop() {
@@ -150,8 +164,14 @@ export async function startScreencast(
       await client.detach().catch(() => undefined);
     },
 
+    resize,
+
     async send(message: InputMessage) {
       if (stopped) return;
+      if (message.type === "viewer") {
+        await resize(message.mode);
+        return;
+      }
       if (message.type === "mouse") {
         await client.send("Input.dispatchMouseEvent", {
           type:

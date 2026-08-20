@@ -156,6 +156,10 @@ export function createComputerGateway(options: ComputerGatewayOptions) {
     return as(botId).read();
   }
 
+  async function extractTable(botId: string) {
+    return as(botId).extractTable();
+  }
+
   /**
    * Resolve a ref against the snapshot the server holds.
    *
@@ -341,6 +345,7 @@ export function createComputerGateway(options: ComputerGatewayOptions) {
     snapshot,
     observe,
     read,
+    extractTable,
     warm(botId: string) {
       return as(botId).warm();
     },

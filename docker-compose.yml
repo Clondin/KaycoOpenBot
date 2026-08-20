@@ -61,6 +61,8 @@ services:
       # The secret every caller must present. The container refuses to start without it.
       COMPUTER_TOKEN: ${COMPUTER_TOKEN:-}
       AGENT_COMPUTER_ALLOW_PRIVATE_HOSTS: ${AGENT_COMPUTER_ALLOW_PRIVATE_HOSTS:-false}
+      ACTION_TIMEOUT_MS: ${ACTION_TIMEOUT_MS:-4000}
+      NAVIGATION_TIMEOUT_MS: ${NAVIGATION_TIMEOUT_MS:-30000}
     volumes:
       - agent-workspace:/workspace
       # Chromium's user-data directory is volume-backed so logins survive container restarts.

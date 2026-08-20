@@ -20,6 +20,7 @@ export const COMPUTER_TOOLS = [
   "computer_navigate",
   "computer_screenshot",
   "computer_read",
+  "computer_extract_table",
   "computer_observe",
   "computer_snapshot",
   "computer_click",
@@ -112,6 +113,18 @@ export type ScreenshotResult = {
 
 /** The current page as text, without opening anything. Same shape as a navigation, minus the trip. */
 export type ReadResult = Omit<NavigateResult, "elapsedMs">;
+
+export type ExtractTableResult = {
+  url: string;
+  title: string;
+  tables: {
+    caption?: string;
+    headers: string[];
+    rows: string[][];
+    truncated: boolean;
+  }[];
+  truncated: boolean;
+};
 
 /**
  * One thing on the page a Bot can act on.

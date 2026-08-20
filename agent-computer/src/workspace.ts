@@ -28,7 +28,15 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises";
-import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import {
+  basename,
+  dirname,
+  extname,
+  isAbsolute,
+  relative,
+  resolve,
+  sep,
+} from "node:path";
 
 export class WorkspacePathError extends Error {
   constructor(message: string) {
@@ -56,6 +64,8 @@ export type WorkspaceLimits = {
   writeBytes: number;
   /** Most entries a listing describes, so a Bot cannot paste a whole disk into its own context. */
   listEntries: number;
+  /** Most bytes accepted from one browser download. */
+  downloadBytes?: number;
 };
 
 /**
@@ -77,6 +87,7 @@ export const DEFAULT_WORKSPACE_LIMITS: WorkspaceLimits = {
   readBytes: 64_000,
   writeBytes: 1_000_000,
   listEntries: 500,
+  downloadBytes: 50 * 1024 * 1024,
 };
 
 export function createWorkspace(
@@ -255,6 +266,44 @@ export function createWorkspace(
         flag: options.append ? "a" : "w",
       });
       return { path: requested, bytes, appended: options.append === true };
+    },
+
+    /** Save a browser download without trusting its suggested path or overwriting an existing file. */
+    async saveDownload(
+      suggestedName: string,
+      contents: Buffer,
+    ): Promise<{ path: string; bytes: number }> {
+      const limit = limits.downloadBytes ?? 50 * 1024 * 1024;
+      if (contents.byteLength > limit) {
+        throw new WorkspaceFileError(
+          `That download is ${contents.byteLength} bytes and the limit is ${limit}.`,
+        );
+      }
+      const raw = basename(suggestedName || "download");
+      const safe =
+        raw
+          .replace(/[^A-Za-z0-9._ -]+/g, "_")
+          .replace(/^\.+/, "")
+          .slice(0, 180) || "download";
+      const extension = extname(safe);
+      const stem = safe.slice(0, safe.length - extension.length) || "download";
+
+      for (let suffix = 0; suffix < 1_000; suffix += 1) {
+        const name = suffix === 0 ? safe : `${stem} (${suffix})${extension}`;
+        const requested = `downloads/${name}`;
+        const full = await resolvePath(requested, true);
+        await mkdir(dirname(full), { recursive: true });
+        try {
+          await writeFile(full, contents, { flag: "wx" });
+          return { path: requested, bytes: contents.byteLength };
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === "EEXIST") continue;
+          throw error;
+        }
+      }
+      throw new WorkspaceFileError(
+        "That download name has too many existing copies.",
+      );
     },
   };
 }

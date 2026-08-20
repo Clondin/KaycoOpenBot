@@ -170,6 +170,7 @@ export function createProfiles(root: string) {
         const context = await chromium.launchPersistentContext(dir, {
           args: LAUNCH_ARGS,
           viewport: VIEWPORT,
+          acceptDownloads: true,
           // This process owns shutdown. Playwright's signal handlers kill Chromium immediately on
           // SIGTERM, before pending cookie writes have time to flush.
           handleSIGTERM: false,

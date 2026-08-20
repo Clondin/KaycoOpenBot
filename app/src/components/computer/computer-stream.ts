@@ -3,7 +3,7 @@ import { apiWebSocketUrl } from "@/lib/api-origin";
 export type ComputerStreamMessage =
   | {
       type: "frame";
-      data: string;
+      data: string | ArrayBuffer;
       width?: number;
       height?: number;
     }
@@ -17,6 +17,7 @@ export type ComputerStreamMessage =
       at?: string;
     }
   | { type: "error"; error?: string }
+  | { type: "download"; path?: string; bytes?: number; error?: string }
   | { type: "connection"; state: "connecting" | "connected" | "reconnecting" };
 
 type Listener = (message: ComputerStreamMessage) => void;
@@ -32,6 +33,7 @@ class SharedComputerStream {
   private closeTimer: ReturnType<typeof setTimeout> | undefined;
   private reconnectAttempt = 0;
   private intentionallyClosed = false;
+  private viewerMode: "compact" | "full" = "compact";
 
   constructor(private readonly computerId: string) {}
 
@@ -60,6 +62,11 @@ class SharedComputerStream {
     this.socket.send(JSON.stringify(message));
   }
 
+  setViewerMode(mode: "compact" | "full"): void {
+    this.viewerMode = mode;
+    this.send({ type: "viewer", mode });
+  }
+
   private emit(message: ComputerStreamMessage): void {
     if (message.type === "frame") this.latestFrame = message;
     if (message.type === "page") this.latestPage = message;
@@ -84,14 +91,27 @@ class SharedComputerStream {
         `/api/computers/${encodeURIComponent(this.computerId)}/stream`,
       ),
     );
+    socket.binaryType = "arraybuffer";
     this.socket = socket;
     socket.onopen = () => {
       this.reconnectAttempt = 0;
       this.emit({ type: "connection", state: "connected" });
+      this.send({ type: "viewer", mode: this.viewerMode });
     };
     socket.onmessage = (event) => {
       try {
-        this.emit(JSON.parse(String(event.data)) as ComputerStreamMessage);
+        if (event.data instanceof ArrayBuffer) {
+          if (event.data.byteLength <= 8) return;
+          const view = new DataView(event.data);
+          this.emit({
+            type: "frame",
+            data: event.data.slice(8),
+            width: view.getUint32(0),
+            height: view.getUint32(4),
+          });
+        } else {
+          this.emit(JSON.parse(String(event.data)) as ComputerStreamMessage);
+        }
       } catch {
         // A malformed frame is isolated; the next valid frame replaces it.
       }
@@ -138,4 +158,11 @@ export function sendComputerStreamInput(
   message: Record<string, unknown>,
 ): void {
   streamFor(computerId).send(message);
+}
+
+export function setComputerStreamMode(
+  computerId: string,
+  mode: "compact" | "full",
+): void {
+  streamFor(computerId).setViewerMode(mode);
 }

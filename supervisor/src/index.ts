@@ -88,6 +88,9 @@ function environmentFor(botId: string): string[] {
   const computerToken = process.env.COMPUTER_TOKEN;
   const allowPrivateHosts =
     process.env.AGENT_COMPUTER_ALLOW_PRIVATE_HOSTS === "true";
+  const browserTimeouts = ["ACTION_TIMEOUT_MS", "NAVIGATION_TIMEOUT_MS"]
+    .map((key) => [key, process.env[key]] as const)
+    .filter((entry): entry is readonly [string, string] => Boolean(entry[1]));
   return [
     // Which Bot this container is. Read by the computer as the Bot to assume when a request does not
     // name one. It is normally named per request, so this is the fallback, and for a container that
@@ -96,6 +99,7 @@ function environmentFor(botId: string): string[] {
     // Without this the computer refuses to start; it must never answer an unauthenticated caller.
     ...(computerToken ? [`COMPUTER_TOKEN=${computerToken}`] : []),
     `AGENT_COMPUTER_ALLOW_PRIVATE_HOSTS=${allowPrivateHosts}`,
+    ...browserTimeouts.map(([key, value]) => `${key}=${value}`),
     // Where to ask what it is. Absent, the computer reports no identity and carries on.
     ...(spireSocketVolume
       ? ["SPIFFE_ENDPOINT_SOCKET=/tmp/spire-agent/public/api.sock"]
@@ -130,11 +134,24 @@ app.post("/computers/:botId/ensure", async (context) => {
 
   try {
     const provision = async () => {
+      const owned = maxRunning ? await listOwned() : [];
       if (
         maxRunning &&
-        !hasComputerCapacity(parsed.names.botId, await listOwned(), maxRunning)
+        !hasComputerCapacity(parsed.names.botId, owned, maxRunning)
       ) {
-        return null;
+        return {
+          capacity: {
+            maxRunning,
+            activeComputers: owned
+              .filter((computer) => computer.status === "running")
+              .map((computer) => ({
+                botId: computer.botId,
+                ...(computer.startedAt
+                  ? { startedAt: computer.startedAt }
+                  : {}),
+              })),
+          },
+        };
       }
 
       // Registered before the computer is handed out, so it can prove which Bot it is from its first
@@ -156,10 +173,12 @@ app.post("/computers/:botId/ensure", async (context) => {
     const provisioned = maxRunning
       ? await withCapacityLock(provision)
       : await provision();
-    if (!provisioned) {
+    if ("capacity" in provisioned) {
       return context.json(
         {
           error: `This host allows ${maxRunning} running Bot ${maxRunning === 1 ? "computer" : "computers"}. Stop an active computer before starting another.`,
+          code: "computer_capacity",
+          ...provisioned.capacity,
         },
         429,
       );

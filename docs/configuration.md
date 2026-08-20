@@ -169,7 +169,7 @@ Google OAuth client id and secret must be configured together. If Google OAuth i
 
 `agent-computer` also reads:
 
-- `ACTION_TIMEOUT_MS`
+- `ACTION_TIMEOUT_MS` (defaults to 4000; element actions fail quickly so the Bot can refresh the page state)
 - `NAVIGATION_TIMEOUT_MS`
 - `WORKSPACE_DIR`
 - `PROFILES_DIR`

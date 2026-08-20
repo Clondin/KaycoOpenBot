@@ -45,9 +45,10 @@ These are durable product directions, not a complete change log:
   browser handover, and safe portable coworker templates are Kayco product
   behavior.
 - **Computer experience:** leased and prewarmed Bot computers, compact
-  action-and-observe results, one shared reconnecting live screen, visible
-  progress, resizable takeover, and direct human paste/file transfer are Kayco
-  product behavior.
+  action-and-observe results, concurrent capacity with operator recovery,
+  goal-and-step progress, batched form filling, structured table extraction,
+  durable downloads, one adaptive reconnecting live screen, resizable takeover,
+  and direct human paste/file transfer are Kayco product behavior.
 - **Extensions and quality:** a versioned extension SDK, policy evaluations,
   and operational tooling are active product development areas.
 

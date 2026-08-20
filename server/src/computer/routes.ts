@@ -21,6 +21,7 @@ import {
   type ComputerGateway,
 } from "./gateway";
 import { type PolicyStore, parseActionPolicy } from "./policy-store";
+import { SupervisorCapacityError } from "./supervisor";
 
 /**
  * The Bot computer's surface, behind the same session guard as every other API route.
@@ -61,7 +62,7 @@ export function createComputerRoutes(
     try {
       return context.json(await gateway.computers());
     } catch (error) {
-      return context.json({ error: describe(error) }, statusFor(error));
+      return computerErrorResponse(context, error);
     }
   });
 
@@ -91,7 +92,7 @@ export function createComputerRoutes(
     try {
       return context.json(await gateway.warm(context.req.param("botId")));
     } catch (error) {
-      return context.json({ error: describe(error) }, statusFor(error));
+      return computerErrorResponse(context, error);
     }
   });
 
@@ -101,7 +102,7 @@ export function createComputerRoutes(
         await client.forBot(context.req.param("botId")).screenshot(),
       );
     } catch (error) {
-      return context.json({ error: describe(error) }, statusFor(error));
+      return computerErrorResponse(context, error);
     }
   });
 
@@ -109,7 +110,17 @@ export function createComputerRoutes(
     try {
       return context.json(await gateway.read(context.req.param("botId")));
     } catch (error) {
-      return context.json({ error: describe(error) }, statusFor(error));
+      return computerErrorResponse(context, error);
+    }
+  });
+
+  routes.get("/:botId/table", async (context) => {
+    try {
+      return context.json(
+        await gateway.extractTable(context.req.param("botId")),
+      );
+    } catch (error) {
+      return computerErrorResponse(context, error);
     }
   });
 
@@ -117,7 +128,7 @@ export function createComputerRoutes(
     try {
       return context.json(await gateway.observe(context.req.param("botId")));
     } catch (error) {
-      return context.json({ error: describe(error) }, statusFor(error));
+      return computerErrorResponse(context, error);
     }
   });
 
@@ -151,7 +162,7 @@ export function createComputerRoutes(
       if (error instanceof NavigationRefusedError) {
         return context.json({ error: error.message }, 403);
       }
-      return context.json({ error: describe(error) }, statusFor(error));
+      return computerErrorResponse(context, error);
     }
   });
 
@@ -159,7 +170,7 @@ export function createComputerRoutes(
     try {
       return context.json(await gateway.snapshot(context.req.param("botId")));
     } catch (error) {
-      return context.json({ error: describe(error) }, statusFor(error));
+      return computerErrorResponse(context, error);
     }
   });
 
@@ -233,7 +244,7 @@ export function createComputerRoutes(
     try {
       return context.json(await gateway.control(context.req.param("botId")));
     } catch (error) {
-      return context.json({ error: describe(error) }, statusFor(error));
+      return computerErrorResponse(context, error);
     }
   });
 
@@ -329,7 +340,7 @@ export function createComputerRoutes(
         }),
       );
     } catch (error) {
-      return context.json({ error: describe(error) }, statusFor(error));
+      return computerErrorResponse(context, error);
     }
   });
 
@@ -363,7 +374,7 @@ export function createComputerRoutes(
         } as Parameters<typeof gateway.humanInput>[1]),
       );
     } catch (error) {
-      return context.json({ error: describe(error) }, statusFor(error));
+      return computerErrorResponse(context, error);
     }
   });
 
@@ -536,7 +547,7 @@ async function act(
         423,
       );
     }
-    return context.json({ error: describe(error) }, statusFor(error));
+    return computerErrorResponse(context, error);
   }
 }
 
@@ -628,7 +639,26 @@ function describe(error: unknown): string {
  * not running (an operator fixes it), the refs are stale (the model fixes it by snapshotting again),
  * and everything else. Navigation established this; the acting routes follow it.
  */
-function statusFor(error: unknown): 409 | 423 | 500 | 503 {
+function computerErrorResponse(context: ComputerContext, error: unknown) {
+  if (error instanceof SupervisorCapacityError) {
+    const administrator = context.var.actor.role === "admin";
+    return context.json(
+      {
+        error: error.message,
+        code: "computer_capacity",
+        ...(error.maxRunning !== undefined
+          ? { maxRunning: error.maxRunning }
+          : {}),
+        ...(administrator ? { activeComputers: error.activeComputers } : {}),
+      },
+      429,
+    );
+  }
+  return context.json({ error: describe(error) }, statusFor(error));
+}
+
+function statusFor(error: unknown): 409 | 423 | 429 | 500 | 503 {
+  if (error instanceof SupervisorCapacityError) return 429;
   if (error instanceof StaleSnapshotError) return 409;
   // The same answer as a stale snapshot, because it is the same instruction: the refs are wrong, take
   // another snapshot. Not 503, which says the computer is unavailable and sends an operator hunting a
