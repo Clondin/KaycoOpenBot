@@ -79,6 +79,10 @@ services:
       INTELLIGENCE_GATEWAY_WS_URL: ${INTELLIGENCE_GATEWAY_WS_URL:-wss://realtime.intelligence.copilotkit.ai}
       INTELLIGENCE_API_KEY: ${INTELLIGENCE_API_KEY:?Set INTELLIGENCE_API_KEY in env.production}
       COPILOTKIT_LICENSE_TOKEN: ${COPILOTKIT_LICENSE_TOKEN:?Set COPILOTKIT_LICENSE_TOKEN in env.production}
+      OPENBOT_CODEX_ENABLED: ${OPENBOT_CODEX_ENABLED:-false}
+      CODEX_HOME_ROOT: /var/lib/openbot/codex-users
+      CODEX_PROCESS_IDLE_MS: ${CODEX_PROCESS_IDLE_MS:-300000}
+      CODEX_DEFAULT_MODEL: ${CODEX_DEFAULT_MODEL:-}
       MANAGED_AGENT_AG_UI_URL: http://agent-langgraph:4201/ag-ui
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
@@ -89,6 +93,8 @@ services:
       COMPUTER_SUPERVISOR_URL: http://supervisor:4300
       SUPERVISOR_TOKEN: ${SUPERVISOR_TOKEN:?Set SUPERVISOR_TOKEN in env.production}
       AGENT_COMPUTER_POLICY: ${AGENT_COMPUTER_POLICY:-}
+    volumes:
+      - codex-user-data:/var/lib/openbot/codex-users
     expose:
       - "3001"
     networks:
@@ -184,3 +190,4 @@ volumes:
   postgres-data:
   caddy-data:
   caddy-config:
+  codex-user-data:

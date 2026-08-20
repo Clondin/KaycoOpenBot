@@ -126,3 +126,11 @@ docker compose --env-file deploy/hetzner/env.production -f deploy/hetzner/compos
 
 Back up PostgreSQL before upgrades. Hetzner server snapshots do not replace database backups, and
 Bot workspaces and browser profiles are Docker volumes that need their own retention decision.
+
+Run the read-only production doctor after every deploy:
+
+```sh
+bash deploy/hetzner/doctor.sh deploy/hetzner/env.production
+```
+
+Backup, guarded restore, upgrade, rollback, and incident procedures are in [OPERATIONS.md](OPERATIONS.md).
