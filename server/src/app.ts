@@ -1,6 +1,8 @@
 import type { Hono as HonoApp, MiddlewareHandler } from "hono";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
+import type { BotAccessCheck } from "./agents/profile-policy";
+import { authoriseAgentCall } from "./agents/callback-token";
 import type { AgentProfileStore } from "./agents/profile-store";
 import { createAgentRoutes } from "./agents/routes";
 import type { ApprovalService } from "./approvals/store";
@@ -18,6 +20,7 @@ import { type ChannelStore, createChannelRoutes } from "./channels/routes";
 import type { ThreadIdentity } from "./channels/thread-identity";
 import { createThreadRoutes } from "./channels/thread-routes";
 import type { CodexProcessManager } from "./codex/manager";
+import type { CodexPreferenceStore } from "./codex/preferences";
 import { createCodexRoutes } from "./codex/routes";
 import { createComponentRoutes } from "./components/routes";
 import type { SandboxedStore } from "./components/sandboxed";
@@ -31,7 +34,8 @@ import type { DeploymentConfig } from "./config";
 import type { ConnectorAdminService } from "./connectors";
 import type { CredentialAdminService, CredentialInput } from "./credentials";
 import { createPluginRoutes } from "./plugins/routes";
-import type { PluginStore } from "./plugins/store";
+import { PluginRefusedError, type PluginStore } from "./plugins/store";
+import { callToolWithApproval, REFUSAL_MARKER } from "./plugins/tools";
 import { createRunRoutes } from "./runs/routes";
 import type { RunStore } from "./runs/store";
 import type { PackageStatusReader } from "./tenant-package";
@@ -121,6 +125,8 @@ export function createApp(
   workServices?: WorkServices,
   /** Per-user ChatGPT connection and Codex App Server lifecycle. */
   codexManager?: CodexProcessManager,
+  /** Saved per-user model and reasoning choices for the Codex adapter. */
+  codexPreferences?: CodexPreferenceStore,
 ) {
   const app = new Hono<{ Variables: AppVariables }>();
 
@@ -431,6 +437,11 @@ export function createApp(
     app.route("/", copilotHandler);
   }
 
+  const canUseBot: BotAccessCheck = agentProfileStore
+    ? async (actor, botId) =>
+        (await agentProfileStore.get(actor, botId)) !== null
+    : async () => true;
+
   // The Bot computer. Acting on a page needs the gateway and the policy it enforces, so all
   // three arrive together or the routes are not mounted: a computer whose actions were ungoverned is
   // not a reduced feature, it is the one shape of this feature that must not exist.
@@ -442,6 +453,7 @@ export function createApp(
         computerGateway,
         computerPolicy,
         requireUser,
+        canUseBot,
       ),
     );
   }
@@ -472,12 +484,70 @@ export function createApp(
   if (componentStore) {
     app.route(
       "/api/components",
-      createComponentRoutes(componentStore, requireUser, auditStore),
+      createComponentRoutes(componentStore, requireUser, auditStore, canUseBot),
     );
   }
 
   if (pluginStore) {
-    app.route("/api/plugins", createPluginRoutes(pluginStore, requireUser));
+    app.route(
+      "/api/plugins",
+      createPluginRoutes(pluginStore, requireUser, canUseBot),
+    );
+  }
+
+  if (pluginStore) {
+    const legacyToken = config.agentToolToken ?? "";
+    app.post("/api/agent-tools/call", async (context) => {
+      const body = (await context.req.json().catch(() => null)) as {
+        name?: string;
+        args?: Record<string, unknown>;
+        run?: unknown;
+      } | null;
+
+      const verdict = await authoriseAgentCall({
+        presented: context.req.header("x-openbot-agent-token") ?? "",
+        run: body?.run,
+        encryptionKey: config.keyEncryptionKey,
+        legacyToken,
+        lookup: async (hash) =>
+          (await agentProfileStore?.agentForCallbackToken(hash)) ?? null,
+      });
+      if (!verdict.ok) {
+        return context.json({ error: verdict.reason }, verdict.status);
+      }
+      if (!body?.name) {
+        return context.json({ error: "A tool is required." }, 400);
+      }
+
+      try {
+        const result = await callToolWithApproval({
+          store: pluginStore,
+          approvals: approvalService,
+          signal: context.req.raw.signal,
+          input: {
+            ref: body.name.replace(/^mcp__/, "").replace("__", "/"),
+            args: body.args ?? {},
+            botId: verdict.botId,
+            actorId: verdict.actorId,
+            ...(verdict.taskRunId ? { runId: verdict.taskRunId } : {}),
+            ...(verdict.channelId ? { channelId: verdict.channelId } : {}),
+          },
+        });
+        return context.json({ text: result.text, isError: result.isError });
+      } catch (error) {
+        const message =
+          error instanceof Error
+            ? error.message
+            : "That tool could not be called.";
+        return context.json({
+          text:
+            error instanceof PluginRefusedError
+              ? `${REFUSAL_MARKER} ${message}`
+              : `That tool could not be called: ${message}`,
+          isError: true,
+        });
+      }
+    });
   }
 
   if (sandboxedStore) {
@@ -508,7 +578,10 @@ export function createApp(
   }
 
   if (codexManager) {
-    app.route("/api/codex", createCodexRoutes(codexManager, requireUser));
+    app.route(
+      "/api/codex",
+      createCodexRoutes(codexManager, requireUser, codexPreferences),
+    );
   }
 
   return app;

@@ -101,6 +101,8 @@ export type DeploymentConfig = {
     idleMs: number;
     defaultModel?: string;
   };
+  /** Legacy shared credential for the Bots shipped with this deployment. */
+  agentToolToken?: string;
 };
 
 type Environment = Record<string, string | undefined>;
@@ -223,7 +225,7 @@ function trustedOrigins(environment: Environment): string[] {
     if (environment.NODE_ENV === "production") {
       throw new Error("TRUSTED_ORIGINS must be configured in production");
     }
-    return ["http://localhost:3000"];
+    return ["http://localhost:3010"];
   }
 
   return [
@@ -525,5 +527,8 @@ export function loadConfig(
     devNoAuth: devAuthEnabled(environment),
     computer: computerConfig(environment),
     codex: codexConfig(environment),
+    ...(optional(environment, "AGENT_TOOL_TOKEN")
+      ? { agentToolToken: optional(environment, "AGENT_TOOL_TOKEN") as string }
+      : {}),
   };
 }

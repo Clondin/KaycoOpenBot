@@ -220,6 +220,43 @@ async function racePackageAttachment(
 }
 
 describe("agent profile store integration", () => {
+  test("imports a team atomically as new private managed coworkers", async () => {
+    const owner = await createUser();
+    await createProfileFixture({ owner, name: "Helper" });
+
+    const imported = await store.importTeam(owner, [
+      {
+        name: "Helper",
+        title: "First role",
+        roleDescription: "Handles the first job.",
+      },
+      {
+        name: "Helper",
+        title: "Second role",
+        roleDescription: "Handles the second job.",
+      },
+    ]);
+    createdAgentIds.push(...imported.map((profile) => profile.id));
+
+    expect(imported.map((profile) => profile.name)).toEqual([
+      "Helper (imported)",
+      "Helper (imported 2)",
+    ]);
+    expect(imported).toEqual(
+      imported.map((profile) =>
+        expect.objectContaining({
+          id: profile.id,
+          ownerUserId: owner.id,
+          visibility: "private",
+          systemOwned: false,
+          endpoint: managedAgentAgUiUrl.toString(),
+          hasAuth: false,
+          hasCallbackToken: false,
+        }),
+      ),
+    );
+  });
+
   test("lets an owner and admin get and list a private profile but hides it from another user", async () => {
     const owner = await createUser();
     const other = await createUser();

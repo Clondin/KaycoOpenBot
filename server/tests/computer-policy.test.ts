@@ -87,6 +87,38 @@ describe("evaluateActionPolicy", () => {
     expect(decision.source).toBe("deny");
   });
 
+  test.each([
+    ['"Submit order"', "a bare string"],
+    ["element.name", "a bare field reference"],
+    ['contains(element.name, "submit") ? element.name : false', "a ternary"],
+    ["repeat.count", "a number"],
+  ])("a non-boolean deny expression still denies (%s: %s)", (rule) => {
+    const decision = evaluateActionPolicy(
+      { ...permissive, deny: [rule] },
+      context(),
+    );
+    expect(decision.allowed).toBe(false);
+    expect(decision.source).toBe("deny");
+  });
+
+  test("a non-boolean allow expression does not permit", () => {
+    const decision = evaluateActionPolicy(
+      { mode: "enforce", deny: [], allow: ['"Submit order"'] },
+      context(),
+    );
+    expect(decision.allowed).toBe(false);
+    expect(decision.source).toBe("default");
+  });
+
+  test("a deny expression that answers false permits", () => {
+    const decision = evaluateActionPolicy(
+      { ...permissive, deny: ['contains(element.name, "cancel")'] },
+      context(),
+    );
+    expect(decision.allowed).toBe(true);
+    expect(decision.source).toBe("allow");
+  });
+
   test("a broken allow expression does not permit", () => {
     const decision = evaluateActionPolicy(
       { mode: "enforce", deny: [], allow: ["also not ( valid"] },
@@ -180,6 +212,31 @@ describe("evaluateActionPolicy", () => {
       context({ element: undefined }),
     );
     expect(decision.allowed).toBe(false);
+  });
+});
+
+describe("describing a refusal", () => {
+  const mcpContext: PolicyContext = {
+    tool: { name: "mcp__notes__search_notes" },
+    bot: { id: "knowledge" },
+    actor: { id: "dev-local-user" },
+    page: { url: "", host: "" },
+    element: { ref: "", role: "", name: "", type: "" },
+    key: "",
+    file: { path: "", name: "", extension: "" },
+    mcp: { server: "notes", tool: "search_notes", effect: "read" },
+  };
+
+  test("a refused tool call names its tool and server", () => {
+    const decision = evaluateActionPolicy(
+      { mode: "enforce", deny: ['mcp.server == "notes"'], allow: ["true"] },
+      mcpContext,
+    );
+    expect(decision.allowed).toBe(false);
+    expect(decision.reason).toBe(
+      'This deployment\'s policy does not allow that: search_notes on notes is blocked by the rule `mcp.server == "notes"`.',
+    );
+    expect(decision.reason).not.toContain("the file");
   });
 });
 

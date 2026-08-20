@@ -1,7 +1,8 @@
 import {
   IconArrowUp,
+  IconPaperclip,
   IconPlayerStopFilled,
-  IconPlus,
+  IconX,
 } from "@tabler/icons-react";
 import { PromptArea, type PromptAreaHandle } from "prompt-area";
 import type { Segment } from "prompt-area/helpers";
@@ -13,8 +14,15 @@ import {
   useRef,
   useState,
 } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { currentUserQueryOptions } from "@/lib/auth/queries";
 import { cn } from "@/lib/utils";
 import { Button } from "../../ui/button";
+import {
+  attachmentFromFile,
+  canAddAttachments,
+  type ComposerAttachment,
+} from "./attachments";
 import {
   applyCommandChips,
   type CommandOption,
@@ -24,6 +32,11 @@ import {
 } from "./draft";
 import { PLACEHOLDER_COMMANDS } from "./sources";
 import { type AgentOption, buildTriggers } from "./triggers";
+import {
+  clearStoredDraft,
+  readStoredDraft,
+  writeStoredDraft,
+} from "./persistence";
 
 const MAX_HEIGHT_PX = 220;
 /**
@@ -38,6 +51,8 @@ export type ComposerProps = {
   /** Agents that `@` can address. Empty means the mention menu reports an empty channel. */
   agents?: readonly AgentOption[];
   commands?: readonly CommandOption[];
+  /** Browser-local key for restoring unsent text after a reload. Attachments are never persisted. */
+  draftKey?: string;
   /**
    * Receives the whole draft rather than a string, so a mention or a command reaches the caller as
    * structured data instead of something it would have to re-parse out of the text.
@@ -85,11 +100,46 @@ export type ComposerProps = {
   stoppable?: boolean;
 };
 
+function AttachmentList({
+  attachments,
+  onRemove,
+}: {
+  attachments: readonly ComposerAttachment[];
+  onRemove: (id: string) => void;
+}) {
+  if (attachments.length === 0) return null;
+  return (
+    <fieldset
+      aria-label="Attachments"
+      className="flex min-w-0 flex-wrap gap-1.5 border-0 px-3 pt-2"
+    >
+      {attachments.map((attachment) => (
+        <span
+          className="inline-flex max-w-full items-center gap-1 rounded-md bg-muted px-2 py-1 text-xs"
+          key={attachment.id}
+        >
+          <IconPaperclip className="size-3 shrink-0" />
+          <span className="max-w-48 truncate">{attachment.name}</span>
+          <button
+            aria-label={`Remove ${attachment.name}`}
+            className="rounded-sm text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            onClick={() => onRemove(attachment.id)}
+            type="button"
+          >
+            <IconX className="size-3" />
+          </button>
+        </span>
+      ))}
+    </fieldset>
+  );
+}
+
 export function Composer({
   className,
   compact = false,
   agents = [],
   commands = PLACEHOLDER_COMMANDS,
+  draftKey,
   onSubmit,
   onQueue,
   onStop,
@@ -97,10 +147,20 @@ export function Composer({
   pending = false,
   stoppable,
 }: ComposerProps) {
-  const [value, setValue] = useState<Segment[]>([]);
+  const { data: currentUser } = useQuery(currentUserQueryOptions());
+  const storageKey =
+    currentUser && draftKey ? `${currentUser.id}:${draftKey}` : undefined;
+  const [value, setValue] = useState<Segment[]>(() =>
+    readStoredDraft(storageKey),
+  );
+  const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
+  const [attachmentProblem, setAttachmentProblem] = useState<string | null>(
+    null,
+  );
   const [isSubmitting, setIsSubmitting] = useState(false);
   const submitInFlight = useRef(false);
   const promptAreaRef = useRef<PromptAreaHandle>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   /** A send has completed and the caret is owed back, as soon as the editor will take it. */
   const wantsFocus = useRef(false);
 
@@ -109,7 +169,41 @@ export function Composer({
     () => buildTriggers({ agents, commands }),
     [agents, commands],
   );
-  const draft = useMemo(() => toDraft(value), [value]);
+  const draft = useMemo(
+    () => toDraft(value, attachments),
+    [value, attachments],
+  );
+
+  useEffect(() => {
+    writeStoredDraft(storageKey, toDraft(value).text);
+  }, [storageKey, value]);
+
+  const removeAttachment = useCallback((id: string) => {
+    setAttachments((current) => current.filter((item) => item.id !== id));
+    setAttachmentProblem(null);
+  }, []);
+
+  const addFiles = useCallback(
+    async (files: readonly File[]) => {
+      const problem = canAddAttachments(attachments, files);
+      if (problem) {
+        setAttachmentProblem(problem);
+        return;
+      }
+      try {
+        const added = await Promise.all(files.map(attachmentFromFile));
+        setAttachments((current) => [...current, ...added]);
+        setAttachmentProblem(null);
+      } catch (error) {
+        setAttachmentProblem(
+          error instanceof Error
+            ? error.message
+            : "That file could not be attached.",
+        );
+      }
+    },
+    [attachments],
+  );
 
   const handleChange = useCallback(
     (next: Segment[]) => {
@@ -135,7 +229,7 @@ export function Composer({
    */
   const submitDraft = useCallback(
     async (segments: Segment[]) => {
-      const submitted = toDraft(segments);
+      const submitted = toDraft(segments, attachments);
       if (submitted.isEmpty || disabled) {
         return;
       }
@@ -157,6 +251,8 @@ export function Composer({
           return;
         }
         setValue([]);
+        setAttachments([]);
+        clearStoredDraft(storageKey);
         onQueue(submitted);
         return;
       }
@@ -169,10 +265,13 @@ export function Composer({
       setIsSubmitting(true);
       // Clear optimistically; restore if the send fails before becoming a message.
       setValue([]);
+      setAttachments([]);
+      clearStoredDraft(storageKey);
       try {
         await onSubmit(submitted);
       } catch (error) {
         setValue(segments);
+        setAttachments(submitted.attachments);
         throw error;
       } finally {
         submitInFlight.current = false;
@@ -182,7 +281,7 @@ export function Composer({
         wantsFocus.current = true;
       }
     },
-    [disabled, isBusy, onQueue, onSubmit],
+    [attachments, disabled, isBusy, onQueue, onSubmit, storageKey],
   );
 
   /**
@@ -251,56 +350,74 @@ export function Composer({
            * COMPACT_MAX_HEIGHT_PX: padding inside that box would scroll away with the text, so the
            * first visible line would still touch the top edge on a long message.
            */
-          "flex min-h-14 items-center gap-3 rounded-2xl border border-border bg-card px-3 py-3 focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50",
+          "flex min-h-14 flex-col rounded-2xl border border-border bg-card focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50",
           className,
         )}
         onSubmit={handleFormSubmit}
       >
-        <Button
-          aria-label="More message options unavailable"
-          className="disabled:opacity-100"
-          disabled
-          size="icon"
-          type="button"
-          variant="ghost"
-        >
-          <IconPlus className="size-5" />
-        </Button>
-        <PromptArea
-          aria-label="Message"
-          className="min-w-0 flex-1 border-0 bg-transparent p-0 text-sm shadow-none"
-          disabled={disabled}
-          maxHeight={COMPACT_MAX_HEIGHT_PX}
-          minHeight={COMPACT_MIN_HEIGHT_PX}
-          onChange={handleChange}
-          onSubmit={submitDraft}
-          placeholder="Ask anything"
-          ref={promptAreaRef}
-          triggers={triggers}
-          value={value}
+        <input
+          className="sr-only"
+          multiple
+          onChange={(event) => {
+            const files = Array.from(event.target.files ?? []);
+            event.target.value = "";
+            void addFiles(files);
+          }}
+          ref={fileInputRef}
+          type="file"
         />
-        {canStop ? (
+        <AttachmentList attachments={attachments} onRemove={removeAttachment} />
+        <div className="flex w-full items-center gap-3 px-3 py-3">
           <Button
-            aria-label="Stop the Bot"
-            className="size-8 rounded-full p-0"
-            data-testid="composer-stop"
-            onClick={onStop}
+            aria-label="Attach files"
+            onClick={() => fileInputRef.current?.click()}
             size="icon"
             type="button"
+            variant="ghost"
           >
-            <IconPlayerStopFilled className="size-3" />
+            <IconPaperclip className="size-5" />
           </Button>
-        ) : (
-          <Button
-            aria-label={sendLabel}
-            className="size-8 rounded-full p-0"
-            disabled={!canSend}
-            size="icon"
-            type="submit"
-          >
-            <IconArrowUp className="size-3.5" />
-          </Button>
-        )}
+          <PromptArea
+            aria-label="Message"
+            className="min-w-0 flex-1 border-0 bg-transparent p-0 text-sm shadow-none"
+            disabled={disabled}
+            maxHeight={COMPACT_MAX_HEIGHT_PX}
+            minHeight={COMPACT_MIN_HEIGHT_PX}
+            onChange={handleChange}
+            onSubmit={submitDraft}
+            placeholder="Ask anything"
+            ref={promptAreaRef}
+            triggers={triggers}
+            value={value}
+          />
+          {canStop ? (
+            <Button
+              aria-label="Stop the Bot"
+              className="size-8 rounded-full p-0"
+              data-testid="composer-stop"
+              onClick={onStop}
+              size="icon"
+              type="button"
+            >
+              <IconPlayerStopFilled className="size-3" />
+            </Button>
+          ) : (
+            <Button
+              aria-label={sendLabel}
+              className="size-8 rounded-full p-0"
+              disabled={!canSend}
+              size="icon"
+              type="submit"
+            >
+              <IconArrowUp className="size-3.5" />
+            </Button>
+          )}
+        </div>
+        {attachmentProblem ? (
+          <p className="px-3 pb-2 text-xs text-destructive" role="alert">
+            {attachmentProblem}
+          </p>
+        ) : null}
       </form>
     );
   }
@@ -312,7 +429,19 @@ export function Composer({
         className="overflow-hidden rounded-2xl border border-border bg-card"
         onSubmit={handleFormSubmit}
       >
-        <input className="sr-only" multiple onChange={() => {}} type="file" />
+        <input
+          className="sr-only"
+          multiple
+          onChange={(event) => {
+            const files = Array.from(event.target.files ?? []);
+            event.target.value = "";
+            void addFiles(files);
+          }}
+          ref={fileInputRef}
+          type="file"
+        />
+
+        <AttachmentList attachments={attachments} onRemove={removeAttachment} />
 
         <div className="grow px-3 pt-3 pb-2">
           <PromptArea
@@ -331,7 +460,15 @@ export function Composer({
         </div>
 
         <div className="mb-2 flex items-center justify-between px-2">
-          <div />
+          <Button
+            aria-label="Attach files"
+            onClick={() => fileInputRef.current?.click()}
+            size="icon-sm"
+            type="button"
+            variant="ghost"
+          >
+            <IconPaperclip />
+          </Button>
 
           <div>
             {canStop ? (
@@ -356,6 +493,11 @@ export function Composer({
             )}
           </div>
         </div>
+        {attachmentProblem ? (
+          <p className="px-3 pb-2 text-xs text-destructive" role="alert">
+            {attachmentProblem}
+          </p>
+        ) : null}
       </form>
     </div>
   );

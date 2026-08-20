@@ -43,6 +43,9 @@ function profile(overrides: Partial<AgentProfile> = {}): AgentProfile {
     systemOwned: false,
     hidden: false,
     deletedAt: null,
+    endpoint: null,
+    hasAuth: false,
+    hasCallbackToken: false,
     ...overrides,
   };
 }
@@ -78,11 +81,32 @@ function fakeStore(
       calls.push(["duplicate", receivedActor, id]);
       return profile({ id: `${id}-copy`, visibility: "private" });
     },
+    async exportTeam(receivedActor, ids) {
+      calls.push(["exportTeam", receivedActor, ids]);
+      return ids.map((id) => profile({ id }));
+    },
+    async importTeam(receivedActor, members) {
+      calls.push(["importTeam", receivedActor, members]);
+      return members.map((member, index) =>
+        profile({ id: `imported-${index + 1}`, ...member }),
+      );
+    },
     async setHidden(receivedActor, id, hidden) {
       calls.push(["setHidden", receivedActor, id, hidden]);
     },
     async softDelete(receivedActor, id) {
       calls.push(["softDelete", receivedActor, id]);
+    },
+    async issueCallbackToken(receivedActor, id) {
+      calls.push(["issueCallbackToken", receivedActor, id]);
+      return "okai_agt_test";
+    },
+    async revokeCallbackToken(receivedActor, id) {
+      calls.push(["revokeCallbackToken", receivedActor, id]);
+    },
+    async agentForCallbackToken(hash) {
+      calls.push(["agentForCallbackToken", hash]);
+      return null;
     },
   };
 
@@ -224,6 +248,8 @@ describe("agent lifecycle routes", () => {
       ["/", { method: "POST", body: JSON.stringify(validInput) }],
       ["/agent-1", { method: "PATCH", body: JSON.stringify(validInput) }],
       ["/agent-1/duplicate", { method: "POST" }],
+      ["/team-template/export", { method: "POST" }],
+      ["/team-template/import", { method: "POST" }],
       ["/agent-1/hide", { method: "POST" }],
       ["/agent-1/unhide", { method: "POST" }],
       ["/agent-1", { method: "DELETE" }],
@@ -313,6 +339,68 @@ describe("agent lifecycle routes", () => {
     ]);
   });
 
+  test("exports and imports only team persona fields", async () => {
+    const store = fakeStore();
+    const app = appFor(store);
+
+    const exported = await app.request(
+      "http://openbot.test/team-template/export",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: "Finance", agentIds: ["agent-1"] }),
+      },
+    );
+    const imported = await app.request(
+      "http://openbot.test/team-template/import",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          schema: "kayco.openbot.team",
+          version: 1,
+          name: "Finance",
+          coworkers: [
+            {
+              name: "Invoice Helper",
+              title: "Finance",
+              roleDescription: "Organizes invoices.",
+              endpoint: "https://untrusted.test",
+              auth: "secret",
+              visibility: "public",
+            },
+          ],
+        }),
+      },
+    );
+
+    expect(exported.status).toBe(200);
+    expect(await json(exported)).toEqual({
+      schema: "kayco.openbot.team",
+      version: 1,
+      name: "Finance",
+      coworkers: [
+        {
+          name: validInput.name,
+          title: validInput.title,
+          roleDescription: validInput.roleDescription,
+        },
+      ],
+    });
+    expect(imported.status).toBe(201);
+    expect(store.calls).toContainEqual([
+      "importTeam",
+      actor,
+      [
+        {
+          name: "Invoice Helper",
+          title: "Finance",
+          roleDescription: "Organizes invoices.",
+        },
+      ],
+    ]);
+  });
+
   test("projects exact DTO fields and computes permissions for the authenticated actor", async () => {
     const store = fakeStore({
       async list() {
@@ -342,6 +430,9 @@ describe("agent lifecycle routes", () => {
           visibility: "private",
           hidden: false,
           systemOwned: false,
+          endpoint: null,
+          hasAuth: false,
+          hasCallbackToken: false,
           canManage: true,
           mine: true,
         },
@@ -354,6 +445,9 @@ describe("agent lifecycle routes", () => {
           visibility: "private",
           hidden: false,
           systemOwned: false,
+          endpoint: null,
+          hasAuth: false,
+          hasCallbackToken: false,
           canManage: false,
           mine: false,
         },
@@ -366,6 +460,9 @@ describe("agent lifecycle routes", () => {
           visibility: "public",
           hidden: false,
           systemOwned: true,
+          endpoint: null,
+          hasAuth: false,
+          hasCallbackToken: false,
           canManage: false,
           mine: false,
         },

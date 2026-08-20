@@ -5,7 +5,13 @@ import type { Message, ToolCall } from "@ag-ui/core";
  */
 
 export type VisibleChatItem =
-  | { kind: "text"; id: string; role: "user" | "assistant"; text: string }
+  | {
+      kind: "text";
+      id: string;
+      role: "user" | "assistant";
+      text: string;
+      attachments?: VisibleAttachment[];
+    }
   | {
       kind: "tool";
       id: string;
@@ -14,6 +20,15 @@ export type VisibleChatItem =
       result?: string;
     };
 
+export type VisibleAttachment = {
+  id: string;
+  kind: "image" | "audio" | "video" | "document" | "binary";
+  name: string;
+  mimeType: string;
+  /** Present only for an inline data image. Never used for document text. */
+  data?: string;
+};
+
 /** A tool result, as it arrives, its own message, pointing back at the call it answers. */
 type ToolResultMessage = { role: "tool"; toolCallId: string; content?: string };
 
@@ -21,6 +36,27 @@ function isToolResult(
   message: Readonly<Message>,
 ): message is Readonly<Message> & ToolResultMessage {
   return message.role === "tool" && "toolCallId" in message;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function isTextPart(part: unknown): part is { type: "text"; text: string } {
+  return (
+    isRecord(part) && part.type === "text" && typeof part.text === "string"
+  );
+}
+
+function isMediaKind(
+  value: unknown,
+): value is Exclude<VisibleAttachment["kind"], "binary"> {
+  return (
+    value === "image" ||
+    value === "audio" ||
+    value === "video" ||
+    value === "document"
+  );
 }
 
 export function toVisibleChatItems(
@@ -59,14 +95,75 @@ export function toVisibleChatItems(
 
     if (message.role !== "user") return [];
 
+    const parts = Array.isArray(message.content) ? message.content : [];
     const text =
       typeof message.content === "string"
         ? message.content
-        : message.content
-            .filter((part) => part.type === "text")
+        : parts
+            .filter(isTextPart)
             .map((part) => part.text)
+            .filter(Boolean)
             .join("\n");
+    const attachments = parts.flatMap((part, index): VisibleAttachment[] => {
+      if (!isRecord(part) || part.type === "text") return [];
+      if (part.type === "binary") {
+        if (typeof part.mimeType !== "string") return [];
+        return [
+          {
+            id: `${message.id}:attachment:${index}`,
+            kind: "binary",
+            name:
+              typeof part.filename === "string" ? part.filename : "Attachment",
+            mimeType: part.mimeType,
+          },
+        ];
+      }
+      if (!isMediaKind(part.type) || !isRecord(part.source)) return [];
+      const metadata = isRecord(part.metadata) ? part.metadata : null;
+      return [
+        {
+          id: `${message.id}:attachment:${index}`,
+          kind: part.type,
+          name:
+            typeof metadata?.filename === "string"
+              ? metadata.filename
+              : `${part.type} attachment`,
+          mimeType:
+            typeof part.source.mimeType === "string"
+              ? part.source.mimeType
+              : `${part.type}/*`,
+          ...(part.type === "image" &&
+          part.source.type === "data" &&
+          typeof part.source.value === "string"
+            ? { data: part.source.value }
+            : {}),
+        },
+      ];
+    });
 
-    return text ? [{ kind: "text", id: message.id, role: "user", text }] : [];
+    return text || attachments.length > 0
+      ? [
+          {
+            kind: "text",
+            id: message.id,
+            role: "user",
+            text,
+            ...(attachments.length > 0 ? { attachments } : {}),
+          },
+        ]
+      : [];
   });
+}
+
+export function searchableMessageIds(
+  messages: ReadonlyArray<Readonly<Message>>,
+  query: string,
+) {
+  const needle = query.trim().toLocaleLowerCase();
+  if (!needle) return [];
+  return toVisibleChatItems(messages).flatMap((item) =>
+    item.kind === "text" && item.text.toLocaleLowerCase().includes(needle)
+      ? [item.id]
+      : [],
+  );
 }

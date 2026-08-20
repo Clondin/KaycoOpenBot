@@ -32,6 +32,7 @@ import type {
   ListFilesInput,
   ReadFileInput,
   ReadResult,
+  ObserveResult,
   ScrollInput,
   SecretRequest,
   SnapshotElement,
@@ -125,9 +126,10 @@ export function createComputerGateway(options: ComputerGatewayOptions) {
    */
   const as = (botId: string) => client.forBot(botId);
 
-  /** Read-only, so it passes straight through. Nothing has changed and there is nothing to decide. */
-  async function snapshot(computerId: string): Promise<SnapshotResult> {
-    const result = await as(computerId).snapshot();
+  function remember(
+    computerId: string,
+    result: SnapshotResult | ObserveResult,
+  ): void {
     snapshots.set(computerId, {
       snapshotId: result.snapshotId,
       url: result.url,
@@ -135,6 +137,18 @@ export function createComputerGateway(options: ComputerGatewayOptions) {
         result.elements.map((element) => [element.ref, element]),
       ),
     });
+  }
+
+  /** Read-only, so it passes straight through. Nothing has changed and there is nothing to decide. */
+  async function snapshot(computerId: string): Promise<SnapshotResult> {
+    const result = await as(computerId).snapshot();
+    remember(computerId, result);
+    return result;
+  }
+
+  async function observe(computerId: string): Promise<ObserveResult> {
+    const result = await as(computerId).observe();
+    remember(computerId, result);
     return result;
   }
 
@@ -310,6 +324,11 @@ export function createComputerGateway(options: ComputerGatewayOptions) {
       });
       throw error;
     }
+    if (result && typeof result === "object" && "observation" in result) {
+      const observation = (result as { observation?: ObserveResult })
+        .observation;
+      if (observation) remember(computerId, observation);
+    }
     // The element's label, attached on the way out, so the transcript can say what was acted on
     // instead of quoting a ref. The computer cannot supply this: it knows the ref, and the resolved
     // snapshot lives here. File calls carry their own path already, so there is nothing to add.
@@ -320,7 +339,11 @@ export function createComputerGateway(options: ComputerGatewayOptions) {
 
   return {
     snapshot,
+    observe,
     read,
+    warm(botId: string) {
+      return as(botId).warm();
+    },
 
     /**
      * Handovers, recorded but not policy-gated.
@@ -509,6 +532,13 @@ export function createComputerGateway(options: ComputerGatewayOptions) {
       input: Parameters<ComputerClient["humanInput"]>[0],
     ) {
       return as(botId).humanInput(input);
+    },
+
+    humanFile(
+      botId: string,
+      input: Parameters<ComputerClient["humanFile"]>[0],
+    ) {
+      return as(botId).humanFile(input);
     },
 
     /**

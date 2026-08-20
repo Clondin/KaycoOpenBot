@@ -8,12 +8,18 @@ import {
   deploymentPackages,
 } from "../db/schema";
 import { authFromConfiguration, storeAgentAuth } from "./auth-header";
+import {
+  hashCallbackToken,
+  mintCallbackToken,
+  sameToken,
+} from "./callback-token";
 import { canManageAgent } from "./profile-policy";
 import type {
   AgentActor,
   AgentProfile,
   CreateAgentInput,
 } from "./profile-types";
+import type { TeamTemplateMember } from "./team-template";
 
 type Transaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
 type DatabaseExecutor = Pick<Database, "select"> | Pick<Transaction, "select">;
@@ -45,8 +51,16 @@ export type AgentProfileStore = {
     input: CreateAgentInput,
   ): Promise<AgentProfile>;
   duplicate(actor: AgentActor, id: string): Promise<AgentProfile>;
+  exportTeam(actor: AgentActor, ids: string[]): Promise<AgentProfile[]>;
+  importTeam(
+    actor: AgentActor,
+    members: TeamTemplateMember[],
+  ): Promise<AgentProfile[]>;
   setHidden(actor: AgentActor, id: string, hidden: boolean): Promise<void>;
   softDelete(actor: AgentActor, id: string): Promise<void>;
+  issueCallbackToken(actor: AgentActor, id: string): Promise<string>;
+  revokeCallbackToken(actor: AgentActor, id: string): Promise<void>;
+  agentForCallbackToken(hash: string): Promise<{ id: string } | null>;
 };
 
 export class AgentNotFoundError extends Error {
@@ -81,6 +95,7 @@ const joinedProjection = {
   packageId: deploymentPackages.id,
   hiddenAt: agentPreferences.hiddenAt,
   deletedAt: agentProfiles.deletedAt,
+  callbackTokenHash: agentProfiles.callbackTokenHash,
   configuration: agents.configuration,
 };
 
@@ -122,6 +137,7 @@ function mapProfile(
     visibility: row.visibility,
     ownerUserId: row.ownerUserId,
     systemOwned: row.packageId !== null,
+    hasCallbackToken: row.callbackTokenHash !== null,
     hidden: row.hiddenAt !== null,
     deletedAt: row.deletedAt,
     endpoint: endpointOf(row.configuration),
@@ -195,6 +211,44 @@ function requireManageable(actor: AgentActor, profile: AgentProfile) {
 
 function newAgentId() {
   return `agent_${crypto.randomUUID()}`;
+}
+
+async function findByTokenHash(
+  database: Database,
+  hash: string,
+): Promise<{ id: string } | null> {
+  const rows = await database
+    .select({
+      agentId: agentProfiles.agentId,
+      hash: agentProfiles.callbackTokenHash,
+    })
+    .from(agentProfiles)
+    .where(
+      and(
+        eq(agentProfiles.callbackTokenHash, hash),
+        isNull(agentProfiles.deletedAt),
+      ),
+    )
+    .limit(1);
+
+  const row = rows[0];
+  if (!row?.hash) return null;
+  return sameToken(row.hash, hash) ? { id: row.agentId } : null;
+}
+
+function collisionSafeName(name: string, used: Set<string>) {
+  if (!used.has(name.toLocaleLowerCase())) {
+    used.add(name.toLocaleLowerCase());
+    return name;
+  }
+  for (let copy = 1; ; copy += 1) {
+    const suffix = copy === 1 ? " (imported)" : ` (imported ${copy})`;
+    const candidate = `${name.slice(0, 80 - suffix.length).trimEnd()}${suffix}`;
+    if (!used.has(candidate.toLocaleLowerCase())) {
+      used.add(candidate.toLocaleLowerCase());
+      return candidate;
+    }
+  }
 }
 
 export function createAgentProfileStore(
@@ -368,6 +422,54 @@ export function createAgentProfileStore(
       });
     },
 
+    async exportTeam(actor, ids) {
+      const unique = [...new Set(ids)];
+      const profiles: AgentProfile[] = [];
+      for (const id of unique) {
+        const profile = await findAccessibleProfile(database, actor, id);
+        if (!profile) throw new AgentNotFoundError(id);
+        requireManageable(actor, profile);
+        profiles.push(profile);
+      }
+      return profiles;
+    },
+
+    importTeam(actor, members) {
+      return database.transaction(async (transaction) => {
+        const existing = await joinedProfiles(transaction, actor).where(
+          and(isNull(agentProfiles.deletedAt), accessFilter(actor)),
+        );
+        const usedNames = new Set(
+          existing.map((row) => row.name.toLocaleLowerCase()),
+        );
+        const created: AgentProfile[] = [];
+
+        for (const member of members) {
+          const id = newAgentId();
+          const name = collisionSafeName(member.name, usedNames);
+          await transaction.insert(agents).values({
+            id,
+            name,
+            type: "remote_ag_ui",
+            configuration: managedConfiguration,
+          });
+          await transaction.insert(agentProfiles).values({
+            agentId: id,
+            ownerUserId: actor.id,
+            title: member.title,
+            roleDescription: member.roleDescription,
+            avatarSeed: id,
+            // Imports can only add private coworkers. Sharing them is a separate, visible decision.
+            visibility: "private",
+          });
+          const profile = await findAccessibleProfile(transaction, actor, id);
+          if (!profile) throw new AgentNotFoundError(id);
+          created.push(profile);
+        }
+        return created;
+      });
+    },
+
     setHidden(actor, id, hidden) {
       return database.transaction(async (transaction) => {
         const profile = await findAccessibleProfile(transaction, actor, id);
@@ -403,6 +505,56 @@ export function createAgentProfileStore(
         },
         { isolationLevel: "read committed" },
       );
+    },
+
+    issueCallbackToken(actor, id) {
+      return database.transaction(
+        async (transaction) => {
+          await lockProfileMutationRows(transaction, id);
+          const profile = await findAccessibleProfile(transaction, actor, id);
+          if (!profile) throw new AgentNotFoundError(id);
+          requireManageable(actor, profile);
+
+          const token = mintCallbackToken();
+          const issuedAt = new Date();
+          await transaction
+            .update(agentProfiles)
+            .set({
+              callbackTokenHash: hashCallbackToken(token),
+              callbackTokenIssuedAt: issuedAt,
+              updatedAt: issuedAt,
+            })
+            .where(eq(agentProfiles.agentId, id));
+          return token;
+        },
+        { isolationLevel: "read committed" },
+      );
+    },
+
+    revokeCallbackToken(actor, id) {
+      return database.transaction(
+        async (transaction) => {
+          await lockProfileMutationRows(transaction, id);
+          const profile = await findAccessibleProfile(transaction, actor, id);
+          if (!profile) throw new AgentNotFoundError(id);
+          requireManageable(actor, profile);
+
+          const now = new Date();
+          await transaction
+            .update(agentProfiles)
+            .set({
+              callbackTokenHash: null,
+              callbackTokenIssuedAt: null,
+              updatedAt: now,
+            })
+            .where(eq(agentProfiles.agentId, id));
+        },
+        { isolationLevel: "read committed" },
+      );
+    },
+
+    agentForCallbackToken(hash) {
+      return findByTokenHash(database, hash);
     },
   };
 }

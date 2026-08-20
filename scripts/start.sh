@@ -26,7 +26,7 @@ setting() {
 }
 
 APP_PORT="$(setting APP_PORT 3010)"
-SERVER_PORT="$(setting SERVER_PORT 3001)"
+SERVER_PORT="$(setting SERVER_PORT "$(setting PORT 3001)")"
 COMPUTER_PORT="$(setting COMPUTER_PORT 4100)"
 BOT_PORT="$(setting BOT_PORT 4200)"
 LANGGRAPH_PORT="$(setting LANGGRAPH_PORT 4201)"

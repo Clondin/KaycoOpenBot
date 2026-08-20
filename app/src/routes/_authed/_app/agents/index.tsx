@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { z } from "zod";
 import { AgentCard } from "@/components/agents/agent-card";
+import { TeamTemplateActions } from "@/components/agents/team-template-actions";
 import { StaggerItem } from "@/components/layout/stagger";
 import { AgentProfile as AgentProfileDetail } from "@/components/agents/agent-profile";
 import { NewAgent } from "@/components/agents/new-agent";
@@ -30,6 +31,9 @@ function AgentsScreen() {
   const navigate = Route.useNavigate();
   const { data: agents } = useQuery(agentListQueryOptions());
   const mine = agents?.filter((a) => a.mine);
+  const exportable = mine?.filter(
+    (agent) => agent.canManage && !agent.systemOwned,
+  );
   const explore = agents?.filter((a) => !a.mine && a.visibility === "public");
 
   // Creating wins if both are somehow set: it is the more recent intent.
@@ -52,17 +56,20 @@ function AgentsScreen() {
       <div className="max-w-2xl px-4 w-full mx-auto">
         <div className="mt-12 w-full max-w-2xl">
           <div className="flex flex-row w-full items-center justify-between">
-            <h2 className="font-bold text-lg">Your agents</h2>
-            <Button
-              variant="ghost"
-              size="sm"
-              render={(props) => (
-                <Link to="/agents" search={{ new: true }} {...props} />
-              )}
-            >
-              <IconPlus />
-              New agent
-            </Button>
+            <h2 className="font-bold text-lg">Your coworkers</h2>
+            <div className="flex items-start gap-1.5">
+              <TeamTemplateActions agents={exportable ?? []} />
+              <Button
+                variant="ghost"
+                size="sm"
+                render={(props) => (
+                  <Link to="/agents" search={{ new: true }} {...props} />
+                )}
+              >
+                <IconPlus />
+                New coworker
+              </Button>
+            </div>
           </div>
           <div className="flex flex-row mt-4">
             {!!mine?.length && (
@@ -82,7 +89,7 @@ function AgentsScreen() {
               <Empty className="border border-dashed h-[180px]">
                 <EmptyHeader>
                   <EmptyTitle className="text-muted-foreground">
-                    You don't have any agents created.
+                    You don't have any coworkers created.
                   </EmptyTitle>
                 </EmptyHeader>
               </Empty>
@@ -90,7 +97,7 @@ function AgentsScreen() {
           </div>
         </div>
         <div className="mt-8 w-full max-w-2xl">
-          <h2 className="font-bold text-lg">Explore agents</h2>
+          <h2 className="font-bold text-lg">Explore coworkers</h2>
           <div className="grid grid-cols-4 gap-4 mt-4">
             {!!explore?.length &&
               explore.map((agent, index) => {

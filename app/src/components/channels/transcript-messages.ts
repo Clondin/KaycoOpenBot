@@ -1,4 +1,8 @@
 import type { Message } from "@ag-ui/core";
+import {
+  attachmentInputPart,
+  type ComposerAttachment,
+} from "@/components/channels/composer";
 
 /**
  * What a transcript shows while a brand-new channel is still joining.
@@ -17,8 +21,22 @@ export function transcriptMessages(
 }
 
 /** The person's message, in the shape the transcript and the agent both take. */
-export function seedMessage(text: string, id: string): Message {
-  return { id, role: "user", content: text };
+export function seedMessage(
+  text: string,
+  id: string,
+  attachments: readonly ComposerAttachment[] = [],
+): Message {
+  return {
+    id,
+    role: "user",
+    content:
+      attachments.length === 0
+        ? text
+        : [
+            ...(text ? [{ type: "text" as const, text }] : []),
+            ...attachments.map(attachmentInputPart),
+          ],
+  };
 }
 
 /**
@@ -32,18 +50,27 @@ export function seedMessage(text: string, id: string): Message {
  * Deliberately not persisted. A reload finds nothing here, which is correct, by then the message
  * is in the thread and arrives through the normal replay.
  */
-const firstMessages = new Map<string, string>();
+export type FirstMessage = {
+  text: string;
+  attachments: ComposerAttachment[];
+};
+
+const firstMessages = new Map<string, FirstMessage>();
 const assignedWork = new Map<string, { text: string; runId: string }>();
 
-export function stashFirstMessage(channelId: string, text: string): void {
-  firstMessages.set(channelId, text);
+export function stashFirstMessage(
+  channelId: string,
+  text: string,
+  attachments: readonly ComposerAttachment[] = [],
+): void {
+  firstMessages.set(channelId, { text, attachments: [...attachments] });
 }
 
 /** Read the pending first message and forget it. Null for a channel opened any other way. */
-export function takeFirstMessage(channelId: string): string | null {
-  const text = firstMessages.get(channelId) ?? null;
+export function takeFirstMessage(channelId: string): FirstMessage | null {
+  const message = firstMessages.get(channelId) ?? null;
   firstMessages.delete(channelId);
-  return text;
+  return message;
 }
 
 /** Queue-owned work opened from the Work page, carrying the durable run it must continue. */

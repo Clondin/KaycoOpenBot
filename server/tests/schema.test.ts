@@ -15,6 +15,7 @@ import {
   channels,
   chunks,
   codexThreadMappings,
+  codexUserPreferences,
   connectorCursors,
   connectorInstances,
   credentials,
@@ -24,6 +25,7 @@ import {
   documents,
   intelligenceChannelMappings,
   memoryEntries,
+  messageReactions,
   notifications,
   projectAgents,
   projectArtifacts,
@@ -180,6 +182,22 @@ describe("OpenBot database schema", () => {
     );
   });
 
+  test("stores user Codex choices and channel-scoped reactions", async () => {
+    expect([codexUserPreferences, messageReactions].map(getTableName)).toEqual([
+      "codex_user_preferences",
+      "message_reactions",
+    ]);
+    const migration = await readFile(
+      new URL("../drizzle/0004_stormy_wild_pack.sql", import.meta.url),
+      "utf8",
+    );
+    expect(migration).toContain('CREATE TABLE "codex_user_preferences"');
+    expect(migration).toContain('CREATE TABLE "message_reactions"');
+    expect(migration).toContain(
+      'PRIMARY KEY("channel_id","message_id","emoji","user_id")',
+    );
+  });
+
   test("defines the exact agent profile and roster preference contracts", () => {
     expect([agentProfiles, agentPreferences].map(getTableName)).toEqual([
       "agent_profiles",
@@ -222,6 +240,18 @@ describe("OpenBot database schema", () => {
       {
         name: "visibility",
         notNull: true,
+        hasDefault: false,
+        primary: false,
+      },
+      {
+        name: "callback_token_hash",
+        notNull: false,
+        hasDefault: false,
+        primary: false,
+      },
+      {
+        name: "callback_token_issued_at",
+        notNull: false,
         hasDefault: false,
         primary: false,
       },
@@ -351,6 +381,12 @@ describe("OpenBot database schema", () => {
         unique: false,
         method: "btree",
       },
+      {
+        name: "agent_profiles_callback_token_hash_idx",
+        columns: ["callback_token_hash"],
+        unique: true,
+        method: "btree",
+      },
     ]);
   });
 
@@ -359,7 +395,14 @@ describe("OpenBot database schema", () => {
       new URL("../drizzle/0000_schema.sql", import.meta.url),
       "utf8",
     );
+    const callbackMigration = await readFile(
+      new URL("../drizzle/0005_futuristic_blue_shield.sql", import.meta.url),
+      "utf8",
+    );
     const normalizedMigration = migration.replace(/\s+/g, " ").trim();
+    const normalizedCallbackMigration = callbackMigration
+      .replace(/\s+/g, " ")
+      .trim();
 
     expect(normalizedMigration).toContain(
       `CREATE TYPE "public"."agent_visibility" AS ENUM('public', 'private')`,
@@ -387,6 +430,15 @@ describe("OpenBot database schema", () => {
     );
     expect(normalizedMigration).toContain(
       `CREATE INDEX "agent_profiles_visibility_deleted_idx" ON "agent_profiles" USING btree ("visibility","deleted_at")`,
+    );
+    expect(normalizedCallbackMigration).toContain(
+      `ALTER TABLE "agent_profiles" ADD COLUMN "callback_token_hash" text`,
+    );
+    expect(normalizedCallbackMigration).toContain(
+      `ALTER TABLE "agent_profiles" ADD COLUMN "callback_token_issued_at" timestamp with time zone`,
+    );
+    expect(normalizedCallbackMigration).toContain(
+      `CREATE UNIQUE INDEX "agent_profiles_callback_token_hash_idx" ON "agent_profiles" USING btree ("callback_token_hash")`,
     );
   });
 });

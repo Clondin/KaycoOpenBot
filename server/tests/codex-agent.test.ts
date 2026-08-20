@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { BaseEvent, RunAgentInput } from "@ag-ui/client";
+import { z } from "zod";
 import { CodexAgent } from "../src/codex/agent";
 import type {
   CodexAgentClient,
@@ -29,6 +30,7 @@ describe("Codex AG-UI adapter", () => {
         homeRoot: "/private/codex",
         idleMs: 10_000,
       },
+      preferences: { model: "gpt-5.6", effort: "high" },
     });
 
     const events = await collect(
@@ -36,7 +38,24 @@ describe("Codex AG-UI adapter", () => {
         threadId: "intelligence-thread",
         runId: "run-1",
         state: {},
-        messages: [{ id: "user-1", role: "user", content: "Hello" }],
+        messages: [
+          {
+            id: "user-1",
+            role: "user",
+            content: [
+              { type: "text", text: "Hello" },
+              {
+                type: "document",
+                source: {
+                  type: "data",
+                  value: "Tm90ZXMgZnJvbSB0aGUgZmlsZS4=",
+                  mimeType: "text/plain",
+                },
+                metadata: { filename: "notes.txt" },
+              },
+            ],
+          },
+        ],
         tools: [
           {
             name: "search_records",
@@ -61,6 +80,7 @@ describe("Codex AG-UI adapter", () => {
       (request) => request.method === "thread/start",
     );
     expect(start?.params).toMatchObject({
+      model: "gpt-5.6",
       approvalPolicy: "never",
       sandbox: "readOnly",
       config: {
@@ -75,13 +95,21 @@ describe("Codex AG-UI adapter", () => {
         },
       ],
     });
+    const turn = client.requests.find(
+      (request) => request.method === "turn/start",
+    );
+    expect(turn?.params).toMatchObject({ effort: "high" });
+    expect(JSON.stringify(turn?.params)).toContain(
+      "Attached text file notes.txt",
+    );
+    expect(JSON.stringify(turn?.params)).toContain("Notes from the file.");
     expect(
       client.requests.some((request) => request.method === "turn/interrupt"),
     ).toBe(false);
   });
 
   test("delegates Codex dynamic tools to the existing browser tool loop", async () => {
-    const client = new FakeCodexClient(true);
+    const client = new FakeCodexClient("surface");
     const agent = new CodexAgent({
       userId: "user-7",
       agentId: "assistant",
@@ -134,6 +162,98 @@ describe("Codex AG-UI adapter", () => {
       client.requests.some((request) => request.method === "turn/interrupt"),
     ).toBe(true);
   });
+
+  test("executes governed deployment tools on the server and continues the Codex turn", async () => {
+    const client = new FakeCodexClient("server");
+    let receivedArguments: unknown;
+    let receivedRun: unknown;
+    const agent = new CodexAgent({
+      userId: "user-7",
+      agentId: "assistant",
+      name: "Assistant",
+      systemPrompt: "Be useful.",
+      manager: manager(client),
+      threadStore: {
+        get: async () => null,
+        set: async () => undefined,
+      },
+      config: {
+        executable: "codex",
+        homeRoot: "/private/codex",
+        idleMs: 10_000,
+      },
+      loadTools: async (run) => {
+        receivedRun = run;
+        return [
+          {
+            name: "mcp__notes__search",
+            description: "Search governed notes.",
+            parameters: z.object({ query: z.string() }),
+            execute: async (args) => {
+              receivedArguments = args;
+              return "Found the governed note.";
+            },
+          },
+        ];
+      },
+    });
+
+    const events = await collect(
+      agent.run({
+        threadId: "intelligence-thread",
+        runId: "run-server-tools",
+        state: {},
+        messages: [{ id: "user-1", role: "user", content: "Search" }],
+        tools: [
+          {
+            name: "show_card",
+            description: "Draw a card in the app.",
+            parameters: { type: "object" },
+          },
+        ],
+        context: [],
+        forwardedProps: {
+          openbotTaskRunId: "task-7",
+          openbotChannelId: "channel-7",
+        },
+      } as RunAgentInput),
+    );
+
+    expect(receivedArguments).toEqual({ query: "open" });
+    expect(receivedRun).toEqual({
+      runId: "task-7",
+      channelId: "channel-7",
+    });
+    expect(events.map((event) => event.type)).toEqual([
+      "RUN_STARTED",
+      "TOOL_CALL_START",
+      "TOOL_CALL_ARGS",
+      "TOOL_CALL_END",
+      "TOOL_CALL_RESULT",
+      "TEXT_MESSAGE_START",
+      "TEXT_MESSAGE_CONTENT",
+      "TEXT_MESSAGE_END",
+      "RUN_FINISHED",
+    ]);
+    expect(events[4]).toMatchObject({
+      toolCallId: "call-1",
+      content: "Found the governed note.",
+    });
+    expect(events[6]).toMatchObject({ delta: "Used the server result." });
+    expect(client.toolResponse).toMatchObject({
+      success: true,
+      contentItems: [{ text: "Found the governed note." }],
+    });
+    expect(
+      client.requests.some((request) => request.method === "turn/interrupt"),
+    ).toBe(false);
+    const start = client.requests.find(
+      (request) => request.method === "thread/start",
+    );
+    expect(start?.params).toMatchObject({
+      dynamicTools: [{ name: "show_card" }, { name: "mcp__notes__search" }],
+    });
+  });
 });
 
 function manager(client: CodexAgentClient): CodexClientLeaseManager {
@@ -164,7 +284,9 @@ class FakeCodexClient implements CodexAgentClient {
   >();
   toolResponse: unknown;
 
-  constructor(private readonly callTool = false) {}
+  constructor(
+    private readonly callTool: false | "surface" | "server" = false,
+  ) {}
 
   async request<T>(method: string, params?: unknown): Promise<T> {
     this.requests.push({ method, params });
@@ -180,9 +302,25 @@ class FakeCodexClient implements CodexAgentClient {
             threadId: "codex-thread",
             turnId: "turn-1",
             callId: "call-1",
-            tool: "search_records",
+            tool:
+              this.callTool === "server"
+                ? "mcp__notes__search"
+                : "search_records",
             arguments: { query: "open" },
           });
+          if (this.callTool === "server") {
+            this.emit("item/agentMessage/delta", {
+              threadId: "codex-thread",
+              turnId: "turn-1",
+              itemId: "message-after-tool",
+              delta: "Used the server result.",
+            });
+            this.emit("turn/completed", {
+              threadId: "codex-thread",
+              turn: { id: "turn-1", status: "completed" },
+            });
+            return;
+          }
           this.emit("turn/completed", {
             threadId: "codex-thread",
             turn: { id: "turn-1", status: "interrupted" },

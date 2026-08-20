@@ -1,7 +1,8 @@
 import { serve } from "bun";
-import type { Page } from "playwright";
+import type { CDPSession, Page } from "playwright";
 import { parseAriaSnapshot, type SnapshotElement } from "./aria-snapshot";
 import { isOpenPath, matchesToken, offeredToken } from "./authorisation";
+import { isPlainBotId } from "./bot-id";
 import {
   type Control,
   ControlError,
@@ -94,6 +95,10 @@ const ACTION_TIMEOUT_MS = Number.parseInt(
  * an ordinary page arrives whole, which is what the answer is usually made of.
  */
 const TEXT_EXTRACT_LIMIT = 6000;
+/** Compact observations keep repeated page state from dominating the model's context. */
+const OBSERVATION_TEXT_LIMIT = 2500;
+const OBSERVATION_ELEMENT_LIMIT = 80;
+const HUMAN_FILE_LIMIT_BYTES = 10 * 1024 * 1024;
 
 /**
  * Which snapshot the caller's refs came from.
@@ -110,10 +115,14 @@ type BotSession = {
   control: Control;
   /** This Bot's snapshot generation. See the note above on staleness. */
   snapshotId: number;
+  /** Fingerprint of the last compact observation, used to report only meaningful page changes. */
+  lastObservation?: { url: string; title: string; elements: string[] };
   /** The one live screen viewer for this Bot, if a person is watching. */
   viewer?: {
     socket: unknown;
+    send: (message: unknown) => void;
     cast: Screencast;
+    page: Page;
     /** Stops the loop that keeps the cast pointed at whatever page the Bot is actually on. */
     follow?: ReturnType<typeof setInterval>;
   };
@@ -171,10 +180,44 @@ const profiles = createProfiles(process.env.PROFILES_DIR ?? "/profiles");
  * Bot to name, such as a health check, so the container stays demonstrable on its own rather than
  * refusing everything that is not the server.
  */
-const DEFAULT_BOT_ID = process.env.COMPUTER_BOT_ID ?? "shared";
+const DEFAULT_BOT_ID = (() => {
+  const configured = process.env.COMPUTER_BOT_ID ?? "shared";
+  if (!isPlainBotId(configured)) {
+    throw new Error(
+      "COMPUTER_BOT_ID may contain only letters, digits, hyphen and underscore, and must start with a letter or digit.",
+    );
+  }
+  return configured;
+})();
+
+const mediaClients = new WeakMap<Page, CDPSession>();
+const BACKGROUND_MEDIA_PATTERNS = [
+  "*.mp4",
+  "*.webm",
+  "*.m3u8",
+  "*.mp3",
+  "*.wav",
+];
+
+async function setRichMedia(target: Page, allowed: boolean): Promise<void> {
+  let client = mediaClients.get(target);
+  if (!client) {
+    client = await target.context().newCDPSession(target);
+    await client.send("Network.enable");
+    mediaClients.set(target, client);
+  }
+  await client.send("Network.setBlockedURLs", {
+    urls: allowed ? [] : BACKGROUND_MEDIA_PATTERNS,
+  });
+}
 
 async function currentPage(botId: string): Promise<Page> {
-  return profiles.page(botId);
+  const target = await profiles.page(botId);
+  if (!mediaClients.has(target)) {
+    // CDP blocking preserves Chromium's normal HTTP cache; Playwright request interception does not.
+    await setRichMedia(target, Boolean(sessionFor(botId).viewer));
+  }
+  return target;
 }
 
 /**
@@ -186,6 +229,7 @@ async function currentPage(botId: string): Promise<Page> {
  */
 async function readablePageText(
   target: Page,
+  limit = TEXT_EXTRACT_LIMIT,
 ): Promise<{ text: string; truncated: boolean }> {
   const raw = await target.evaluate(() => {
     const clone = document.body?.cloneNode(true) as HTMLElement | undefined;
@@ -198,8 +242,8 @@ async function readablePageText(
 
   const collapsed = raw.replace(/\n{3,}/g, "\n\n").trim();
   return {
-    text: collapsed.slice(0, TEXT_EXTRACT_LIMIT),
-    truncated: collapsed.length > TEXT_EXTRACT_LIMIT,
+    text: collapsed.slice(0, limit),
+    truncated: collapsed.length > limit,
   };
 }
 
@@ -228,6 +272,56 @@ async function snapshotPage(
     title: await target.title(),
     ...parseAriaSnapshot(yaml),
   };
+}
+
+/** Text plus controls in one bounded response, with a tiny change summary for repeated observations. */
+async function observePage(session: BotSession, target: Page) {
+  session.snapshotId += 1;
+  const [title, extract, yaml] = await Promise.all([
+    target.title(),
+    readablePageText(target, OBSERVATION_TEXT_LIMIT),
+    target.ariaSnapshot({ mode: "ai" }),
+  ]);
+  const snapshot = parseAriaSnapshot(yaml, {
+    limit: OBSERVATION_ELEMENT_LIMIT,
+  });
+  const url = target.url();
+  const fingerprints = snapshot.elements.map(
+    (element) => `${element.role}:${element.name}:${element.checked ?? ""}`,
+  );
+  const previous = session.lastObservation;
+  const changes: string[] = [];
+  if (!previous) {
+    changes.push("Initial page observation");
+  } else {
+    if (previous.url !== url) changes.push(`Page changed to ${url}`);
+    else if (previous.title !== title)
+      changes.push(`Title changed to ${title}`);
+    const before = new Set(previous.elements);
+    const after = new Set(fingerprints);
+    const added = fingerprints.filter((item) => !before.has(item)).slice(0, 4);
+    const removed = previous.elements
+      .filter((item) => !after.has(item))
+      .slice(0, 4);
+    if (added.length) changes.push(`New controls: ${added.join(", ")}`);
+    if (removed.length) changes.push(`Removed controls: ${removed.join(", ")}`);
+    if (!changes.length) changes.push("No important page changes");
+  }
+  session.lastObservation = { url, title, elements: fingerprints };
+  return {
+    snapshotId: session.snapshotId,
+    url,
+    title,
+    text: extract.text,
+    textTruncated: extract.truncated,
+    elements: snapshot.elements,
+    elementsTruncated: snapshot.truncated,
+    changes,
+  };
+}
+
+function sendToViewer(session: BotSession, message: unknown): void {
+  session.viewer?.send(message);
 }
 
 /**
@@ -301,11 +395,18 @@ function json(body: unknown, status = 200): Response {
  * A second cast on the same page would have Chrome encoding every frame twice and both sockets acking
  * independently, which stalls both. One person drives; one cast.
  */
-async function stopViewer(session: BotSession): Promise<void> {
+async function stopViewer(
+  session: BotSession,
+  socket?: unknown,
+): Promise<void> {
   const current = session.viewer;
+  if (socket !== undefined && current?.socket !== socket) return;
   session.viewer = undefined;
   if (current?.follow) clearInterval(current.follow);
   await current?.cast.stop();
+  if (current?.page && !current.page.isClosed()) {
+    await setRichMedia(current.page, false).catch(() => undefined);
+  }
 }
 
 /** How often the cast checks that it is still showing the page the Bot is on. */
@@ -335,7 +436,7 @@ serve<StreamData>({
           try {
             ws.send(JSON.stringify(frame));
           } catch {
-            void stopViewer(session);
+            void stopViewer(session, ws);
           }
         };
 
@@ -344,18 +445,34 @@ serve<StreamData>({
          * underneath us without a listener per page.
          */
         let casting: Page | undefined;
+        let pageSignature = "";
         const attach = async () => {
           const target = await currentPage(ws.data.botId);
-          if (target === casting) return;
-          const previous = session.viewer;
-          const cast = await startScreencast(target, send);
-          casting = target;
-          session.viewer = { socket: ws, cast, follow: previous?.follow };
-          // The old cast stops after the replacement is running, so the screen does not go blank.
-          await previous?.cast.stop().catch(() => undefined);
+          if (target !== casting) {
+            const previous = session.viewer;
+            await setRichMedia(target, true);
+            const cast = await startScreencast(target, send);
+            casting = target;
+            session.viewer = {
+              socket: ws,
+              cast,
+              send,
+              page: target,
+              follow: previous?.follow,
+            };
+            // The old cast stops after the replacement is running, so the screen does not go blank.
+            await previous?.cast.stop().catch(() => undefined);
+          }
+          const title = await target.title().catch(() => "");
+          const nextSignature = `${target.url()}\n${title}`;
+          if (pageSignature !== nextSignature) {
+            pageSignature = nextSignature;
+            send({ type: "page", url: target.url(), title });
+          }
         };
 
         await attach();
+        send({ type: "control", state: session.control.get() });
         const follow = setInterval(() => {
           void attach().catch(() => undefined);
         }, FOLLOW_INTERVAL_MS);
@@ -411,7 +528,7 @@ serve<StreamData>({
     },
 
     async close(ws) {
-      await stopViewer(sessionFor(ws.data.botId));
+      await stopViewer(sessionFor(ws.data.botId), ws);
     },
   },
   async fetch(request, server) {
@@ -440,6 +557,9 @@ serve<StreamData>({
     // Resolved once per request. Everything below that touches a browser, a takeover or a snapshot
     // goes through this Bot's session, so there is no path where one Bot's call reaches another's.
     const botId = botIdOf(request);
+    if (!isOpenPath(url.pathname) && !isPlainBotId(botId)) {
+      return json({ error: "That is not a usable bot id." }, 400);
+    }
     const session = sessionFor(botId);
 
     if (url.pathname === "/stream") {
@@ -450,6 +570,9 @@ serve<StreamData>({
        * still wins where there is one.
        */
       const streamBotId = botIdOf(request, url.searchParams.get("bot"));
+      if (!isPlainBotId(streamBotId)) {
+        return json({ error: "That is not a usable bot id." }, 400);
+      }
       if (server.upgrade(request, { data: { botId: streamBotId } }))
         return undefined as unknown as Response;
       return json({ error: "Expected a WebSocket upgrade." }, 400);
@@ -473,7 +596,9 @@ serve<StreamData>({
       const body = (await request.json().catch(() => null)) as {
         reason?: unknown;
       } | null;
-      return json(session.control.requestHelp(body?.reason));
+      const state = session.control.requestHelp(body?.reason);
+      sendToViewer(session, { type: "control", state });
+      return json(state);
     }
 
     // The Bot asking for one value it must not be told. It has already focused the field.
@@ -484,7 +609,9 @@ serve<StreamData>({
         snapshotId?: unknown;
       } | null;
       try {
-        return json(session.control.requestSecret(body ?? {}));
+        const state = session.control.requestSecret(body ?? {});
+        sendToViewer(session, { type: "control", state });
+        return json(state);
       } catch (error) {
         if (error instanceof ControlRequestError) {
           return json({ error: error.message }, 400);
@@ -538,6 +665,10 @@ serve<StreamData>({
         // Cleared only after it actually landed, so a failure leaves the request open and the person
         // can try again rather than being told to start over.
         session.control.secretSupplied();
+        sendToViewer(session, {
+          type: "control",
+          state: session.control.get(),
+        });
         return json({ supplied: true, characters, url: target.url() });
       } catch (error) {
         if (error instanceof StaleSnapshotError) {
@@ -551,6 +682,10 @@ serve<StreamData>({
         // password into the same dead ref for ever. Clearing it also unblocks the Bot, which can see
         // on its next turn that nothing is pending and ask again against a fresh snapshot.
         session.control.secretSupplied();
+        sendToViewer(session, {
+          type: "control",
+          state: session.control.get(),
+        });
         return json(
           {
             error: describe(
@@ -564,13 +699,72 @@ serve<StreamData>({
     }
 
     if (url.pathname === "/control/take" && request.method === "POST") {
-      return json(session.control.take());
+      const state = session.control.take();
+      sendToViewer(session, { type: "control", state });
+      return json(state);
     }
 
     if (url.pathname === "/control/release" && request.method === "POST") {
       // `reason` is dropped on release: it described the thing the person was asked to do, and once
       // they have done it, leaving it set would have the surface still showing the old request.
-      return json(session.control.release());
+      const state = session.control.release();
+      sendToViewer(session, { type: "control", state });
+      return json(state);
+    }
+
+    if (url.pathname === "/human/file" && request.method === "POST") {
+      if (!session.control.humanMayDrive()) {
+        return json({ error: TAKE_CONTROL_FIRST }, 409);
+      }
+      const body = (await request.json().catch(() => null)) as {
+        name?: unknown;
+        mimeType?: unknown;
+        base64?: unknown;
+      } | null;
+      if (
+        typeof body?.name !== "string" ||
+        typeof body.mimeType !== "string" ||
+        typeof body.base64 !== "string"
+      ) {
+        return json({ error: "A file is required." }, 400);
+      }
+      const buffer = Buffer.from(body.base64, "base64");
+      if (buffer.byteLength > HUMAN_FILE_LIMIT_BYTES) {
+        return json({ error: "Files are limited to 10 MB." }, 400);
+      }
+      try {
+        const target = await currentPage(botId);
+        let input = target.locator('input[type="file"]:focus');
+        if ((await input.count()) === 0) {
+          const visible = target.locator('input[type="file"]:visible');
+          if ((await visible.count()) !== 1) {
+            return json(
+              {
+                error:
+                  "Focus one file-upload control on the page, then choose the file again.",
+              },
+              400,
+            );
+          }
+          input = visible;
+        }
+        await input.setInputFiles({
+          name: body.name.slice(0, 255),
+          mimeType: body.mimeType || "application/octet-stream",
+          buffer,
+        });
+        return json({
+          uploaded: true,
+          name: body.name,
+          bytes: buffer.byteLength,
+          url: target.url(),
+        });
+      } catch (error) {
+        return json(
+          { error: describe(error, "That file could not be uploaded.") },
+          502,
+        );
+      }
     }
 
     // A person's input, by pixel. The Bot addresses elements by reference because it reads a list; a
@@ -606,6 +800,19 @@ serve<StreamData>({
       });
     }
 
+    if (url.pathname === "/warm" && request.method === "POST") {
+      const startedAt = Date.now();
+      try {
+        await currentPage(botId);
+        return json({ ready: true, elapsedMs: Date.now() - startedAt });
+      } catch (error) {
+        return json(
+          { error: describe(error, "The browser could not be warmed.") },
+          502,
+        );
+      }
+    }
+
     /**
      * The computers this process holds. The shape is a list because the admin surface is a
      * list, and because a Bot that has a profile has a computer whether or not a browser is running
@@ -626,6 +833,7 @@ serve<StreamData>({
       const wasRunning = await profiles.stop(botId);
       // The wheel goes back to the Bot because the controlled browser no longer exists.
       session.control.release();
+      sendToViewer(session, { type: "control", state: session.control.get() });
       return json({ stopped: true, wasRunning });
     }
 
@@ -640,6 +848,8 @@ serve<StreamData>({
       await profiles.reset(botId);
       // Reset releases control because any previous browser session and pending secret request are gone.
       session.control.release();
+      session.lastObservation = undefined;
+      sendToViewer(session, { type: "control", state: session.control.get() });
       return json({ reset: true, botId });
     }
 
@@ -659,16 +869,14 @@ serve<StreamData>({
           waitUntil: "domcontentloaded",
           timeout: NAVIGATION_TIMEOUT_MS,
         });
-        // A new document wipes every stamp, so every ref handed out before now is meaningless.
-        // Bumping the generation makes an action carrying one fail with "take a new snapshot" rather
-        // than fall through to a selector that matches nothing and read as a missing element.
-        session.snapshotId += 1;
-        const extract = await readablePageText(target);
+        // Observation mints fresh refs for the new document and returns them beside the text.
+        const observation = await observePage(session, target);
         return json({
           url: target.url(),
           title: await target.title(),
-          text: extract.text,
-          truncated: extract.truncated,
+          text: observation.text,
+          truncated: observation.textTruncated,
+          observation,
           elapsedMs: Date.now() - startedAt,
         });
       } catch (error) {
@@ -814,6 +1022,14 @@ serve<StreamData>({
       }
     }
 
+    if (url.pathname === "/observe" && request.method === "POST") {
+      try {
+        return json(await observePage(session, await currentPage(botId)));
+      } catch (error) {
+        return json({ error: describe(error, "Observation failed.") }, 502);
+      }
+    }
+
     if (ACTIONS.has(url.pathname) && request.method === "POST") {
       const body = (await request
         .json()
@@ -835,7 +1051,31 @@ serve<StreamData>({
           // aborts the one it made to this computer, and Bun aborts this one in turn.
           request.signal,
         );
-        return json({ ...detail, elapsedMs: Date.now() - startedAt });
+        // Give fast client-side updates a short chance to land, then return the new page state in the
+        // same tool call. This removes the usual action -> read -> snapshot model loop.
+        await target
+          .waitForLoadState("domcontentloaded", { timeout: 1_500 })
+          .catch(() => undefined);
+        await new Promise((resolve) => setTimeout(resolve, 120));
+        try {
+          const observation = await observePage(session, target);
+          return json({
+            ...detail,
+            observation,
+            elapsedMs: Date.now() - startedAt,
+          });
+        } catch (observationError) {
+          // The action already happened. Never turn a follow-up read failure into a failed action:
+          // callers retry failures, and repeating a successful click can submit something twice.
+          return json({
+            ...detail,
+            observationError: describe(
+              observationError,
+              "The page changed, but its new state could not be read. Observe it before acting again.",
+            ),
+            elapsedMs: Date.now() - startedAt,
+          });
+        }
       } catch (error) {
         /*
          * Stopped, not failed. The signal is checked rather than the error text: Playwright words an
@@ -996,7 +1236,18 @@ async function performAction(
 
   if (action === "/click") {
     if (!ref) throw new Error("A click needs the ref of an element to click.");
-    await (await resolveRef(session, target, ref, expected)).click(acting);
+    const element = await resolveRef(session, target, ref, expected);
+    const box = session.viewer
+      ? await element.boundingBox().catch(() => null)
+      : null;
+    sendToViewer(session, {
+      type: "action",
+      action: "click",
+      ref,
+      box,
+      at: new Date().toISOString(),
+    });
+    await element.click(acting);
     return { action: "click", ref, url: target.url() };
   }
 
@@ -1006,6 +1257,16 @@ async function performAction(
       throw new Error("Typing needs the text to enter.");
     }
     const field = await resolveRef(session, target, ref, expected);
+    const box = session.viewer
+      ? await field.boundingBox().catch(() => null)
+      : null;
+    sendToViewer(session, {
+      type: "action",
+      action: "type",
+      ref,
+      box,
+      at: new Date().toISOString(),
+    });
     // `fill` rather than keystrokes: it clears the field first, which is what "put this value in
     // this box" means. Typing into a field a previous attempt half-filled otherwise appends, and the
     // form ends up with "AlicAlice" in it.
@@ -1030,11 +1291,24 @@ async function performAction(
       throw new Error("A key press needs a key name, such as Enter or Tab.");
     }
     if (ref) {
-      await (await resolveRef(session, target, ref, expected)).press(
-        body.key,
-        acting,
-      );
+      const element = await resolveRef(session, target, ref, expected);
+      const box = session.viewer
+        ? await element.boundingBox().catch(() => null)
+        : null;
+      sendToViewer(session, {
+        type: "action",
+        action: "key",
+        ref,
+        box,
+        at: new Date().toISOString(),
+      });
+      await element.press(body.key, acting);
     } else {
+      sendToViewer(session, {
+        type: "action",
+        action: "key",
+        at: new Date().toISOString(),
+      });
       await target.keyboard.press(body.key);
     }
     return { action: "key", key: body.key, ref, url: target.url() };
@@ -1043,6 +1317,11 @@ async function performAction(
   // Scroll. A plain wheel event on the page, which is what moves a long form, rather than scrolling a
   // specific element into view: the Bot asked to see further down, not to hunt for one control.
   const deltaY = typeof body.deltaY === "number" ? body.deltaY : 600;
+  sendToViewer(session, {
+    type: "action",
+    action: "scroll",
+    at: new Date().toISOString(),
+  });
   await target.mouse.wheel(0, deltaY);
   return { action: "scroll", deltaY, url: target.url() };
 }

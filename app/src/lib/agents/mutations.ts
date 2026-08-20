@@ -97,3 +97,27 @@ export function deleteAgentMutationOptions(queryClient: QueryClient) {
     onSuccess: () => invalidateAgents(queryClient),
   });
 }
+
+export function issueCallbackTokenMutationOptions(queryClient: QueryClient) {
+  return mutationOptions({
+    mutationFn: async (agentId: string): Promise<string> => {
+      const response = await agentRequest(
+        `/api/agents/${agentId}/callback-token`,
+        { method: "POST" },
+      );
+      return ((await response.json()) as { token: string }).token;
+    },
+    onSuccess: () => invalidateAgents(queryClient),
+  });
+}
+
+export function revokeCallbackTokenMutationOptions(queryClient: QueryClient) {
+  return mutationOptions({
+    mutationFn: async (agentId: string) => {
+      await agentRequest(`/api/agents/${agentId}/callback-token`, {
+        method: "DELETE",
+      });
+    },
+    onSuccess: () => invalidateAgents(queryClient),
+  });
+}

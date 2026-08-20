@@ -1,14 +1,17 @@
 import { useFrontendTool } from "@copilotkit/react-core/v2";
 import { z } from "zod";
 import { ToolLine } from "@/components/channels/tool-line";
-import { ComputerView } from "@/components/computer/computer-view";
+import { ScreenshotArtifact } from "@/components/computer/screenshot-artifact";
 import {
   type ControlState,
   readControl,
 } from "@/components/computer/take-the-wheel";
 import { useActiveBotHolder } from "./active-bot";
 import { type ActiveRun, useActiveRunHolder } from "./active-run";
-import { reportComputerActivity } from "./computer-activity";
+import {
+  reportComputerActivity,
+  updateComputerActivity,
+} from "./computer-activity";
 import { waitForApprovalDecision } from "../runs/approvals";
 
 /**
@@ -52,7 +55,20 @@ async function callComputer(
   signal?: AbortSignal,
 ): Promise<ToolOutcome> {
   // Announce before the call so the screen can open while the action is running.
-  reportComputerActivity(botId);
+  const progress = progressFor(path);
+  const activity = reportComputerActivity(botId, progress);
+  const startedAt = performance.now();
+  const finish = (outcome: ToolOutcome): ToolOutcome => {
+    const elapsedMs = Math.round(performance.now() - startedAt);
+    updateComputerActivity(activity, {
+      stage: outcome.ok ? "complete" : "error",
+      label: outcome.ok
+        ? `${progress.label} — done`
+        : String(outcome.reason ?? "Computer step failed"),
+      elapsedMs,
+    });
+    return outcome;
+  };
   const request = async (approvalId?: string) => {
     const headers = new Headers(init?.headers);
     if (task.runId) headers.set("X-OpenBot-Run-Id", task.runId);
@@ -72,12 +88,12 @@ async function callComputer(
   } catch (error) {
     // An abort is a stopped run, not a computer failure.
     if (error instanceof DOMException && error.name === "AbortError") {
-      return { ok: false, reason: "Stopped.", stopped: true };
+      return finish({ ok: false, reason: "Stopped.", stopped: true });
     }
-    return {
+    return finish({
       ok: false,
       reason: "The assistant's computer could not be reached.",
-    };
+    });
   }
 
   let body = (await response.json().catch(() => null)) as Record<
@@ -86,20 +102,24 @@ async function callComputer(
   > | null;
 
   if (response.status === 428 && body?.approvalRequired === true) {
+    updateComputerActivity(activity, {
+      stage: "waiting",
+      label: "Waiting for your approval",
+    });
     const approval = body.approval as { id?: unknown } | undefined;
     const approvalId =
       typeof approval?.id === "string" ? approval.id : undefined;
     if (!approvalId || !task.runId) {
-      return {
+      return finish({
         ok: false,
         refused: true,
         reason:
           "This action requires approval, but it is not running inside a durable task.",
-      };
+      });
     }
     const decision = await waitForApprovalDecision(approvalId, signal);
     if (decision !== "approved") {
-      return {
+      return finish({
         ok: false,
         refused: true,
         reason:
@@ -108,7 +128,7 @@ async function callComputer(
             : decision === "cancelled"
               ? "The approval wait was stopped."
               : "The approval request expired before it was decided.",
-      };
+      });
     }
     try {
       response = await request(approvalId);
@@ -118,17 +138,17 @@ async function callComputer(
       > | null;
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") {
-        return { ok: false, reason: "Stopped.", stopped: true };
+        return finish({ ok: false, reason: "Stopped.", stopped: true });
       }
-      return {
+      return finish({
         ok: false,
         reason: "The approved action could not reach the assistant's computer.",
-      };
+      });
     }
   }
 
   if (!response.ok) {
-    return {
+    return finish({
       ok: false,
       reason: (body?.error as string) ?? "That did not work.",
       // Preserve refusal/stale-ref/control distinctions for the model's next step.
@@ -142,10 +162,33 @@ async function callComputer(
             ? { humanHasControl: true }
             : { staleRefs: true }
           : {}),
-    };
+    });
   }
 
-  return { ok: true, ...(body ?? {}) };
+  return finish({ ok: true, ...(body ?? {}) });
+}
+
+function progressFor(path: string): {
+  stage: "starting" | "opening" | "reading" | "acting" | "waiting";
+  label: string;
+} {
+  if (path === "/warm")
+    return { stage: "starting", label: "Starting the computer" };
+  if (path === "/navigate")
+    return { stage: "opening", label: "Opening the page" };
+  if (path === "/observe" || path === "/snapshot" || path === "/read")
+    return { stage: "reading", label: "Checking the page" };
+  if (path === "/click")
+    return { stage: "acting", label: "Selecting a control" };
+  if (path === "/type") return { stage: "acting", label: "Filling in a field" };
+  if (path === "/key") return { stage: "acting", label: "Pressing a key" };
+  if (path === "/scroll")
+    return { stage: "acting", label: "Moving through the page" };
+  if (path.includes("/control"))
+    return { stage: "waiting", label: "Waiting for you" };
+  if (path.includes("/files"))
+    return { stage: "reading", label: "Working with a file" };
+  return { stage: "acting", label: "Using the computer" };
 }
 
 /** What a computer tool's render can read back out of its own result. */
@@ -234,9 +277,10 @@ export function ComputerTools() {
   useFrontendTool({
     name: "computer_navigate",
     description:
-      "Open a web page on your own computer so the person can watch. Use this when asked to look " +
-      "at, visit, open or check a website. Returns the page title and its readable text, so answer " +
-      "from what comes back rather than telling the person to go and look.",
+      "Open an interactive or visual web page on your own computer so the person can watch. Prefer " +
+      "a connected structured search, database, or app tool for plain facts when one is available; " +
+      "use the browser for websites, logins, forms, and visual checks. The result includes compact " +
+      "page text and fresh actionable refs in observation, so do not immediately call read or snapshot.",
     parameters: z.object({
       url: z.string().describe("Full web address to open, including https://"),
     }),
@@ -266,49 +310,70 @@ export function ComputerTools() {
           }
         : result;
     },
-    render: ({ status }) => (
-      <div className="my-2">
-        <ComputerView computerId={bot.current} active={status !== "complete"} />
-      </div>
+    render: ({ result, status }) => {
+      const outcome = outcomeOf(result) as ComputerOutcome & {
+        title?: unknown;
+      };
+      return (
+        <ActionLine
+          running={status !== "complete"}
+          label="Opened a page"
+          detail={
+            typeof outcome.title === "string"
+              ? outcome.title
+              : typeof outcome.reason === "string"
+                ? outcome.reason
+                : undefined
+          }
+          refused={outcome.refused === true}
+          failed={didNotWork(outcome)}
+        />
+      );
+    },
+  });
+
+  useFrontendTool({
+    name: "computer_screenshot",
+    description:
+      "Capture the current screen as a point-in-time image in the conversation. Use this when the " +
+      "person asks to see what is on your screen or when a visual result is important to the record.",
+    parameters: z.object({}),
+    handler: async () => callComputer(bot.current, run.current, "/screenshot"),
+    render: ({ result, status }) => (
+      <ScreenshotArtifact result={result} running={status !== "complete"} />
     ),
   });
 
   useFrontendTool({
     name: "computer_read",
     description:
-      "Read the page currently open on your computer, without opening anything. Use this after you " +
-      "click something that changes the page, such as submitting a form, to find out what it now says.",
+      "Read a longer text extract from the page currently open. Actions already return a compact " +
+      "observation, so use this only when that extract was truncated or you need more page text.",
     parameters: z.object({}),
     handler: async () => callComputer(bot.current, run.current, "/read"),
     render: () => null,
   });
 
   useFrontendTool({
+    name: "computer_observe",
+    description:
+      "Get compact page text, the most useful actionable controls, and what changed in one call. " +
+      "Use this after a stale-ref error or when an older computer action did not return observation.",
+    parameters: z.object({}),
+    handler: async () =>
+      callComputer(bot.current, run.current, "/observe", { method: "POST" }),
+    render: () => null,
+  });
+
+  useFrontendTool({
     name: "computer_snapshot",
     description:
-      "List the things on the current page you can act on: fields, buttons, links and checkboxes, " +
-      "each with a ref, its label and its current value. Call this BEFORE clicking or typing, and " +
-      "use the refs it returns. Always send back the snapshotId it gives you. If an action reports " +
-      "that your refs are stale, the page changed: call this again and use the new refs.",
+      "List up to 200 actionable controls on a very large page. Navigation and actions already " +
+      "return a smaller observation with fresh refs; use this only if that compact list was truncated.",
     parameters: z.object({}),
     handler: async () =>
       callComputer(bot.current, run.current, "/snapshot", { method: "POST" }),
-    // Snapshot renders a count only; navigate owns the screen view.
-    render: ({ result, status }) => {
-      const outcome = outcomeOf(result);
-      const elements = Array.isArray(outcome.elements) ? outcome.elements : [];
-      return (
-        <ActionLine
-          running={status !== "complete"}
-          label="Read the page"
-          detail={
-            elements.length
-              ? `${elements.length} thing${elements.length === 1 ? "" : "s"} it can act on`
-              : undefined
-          }
-        />
-      );
-    },
+    render: () => null,
   });
 
   useFrontendTool({
@@ -316,7 +381,8 @@ export function ComputerTools() {
     description:
       "Enter text into a field on the page. Give the ref of the field from your most recent " +
       "snapshot and the snapshotId it came from. This replaces whatever the field already contains. " +
-      "Set submit to true to press Enter afterwards.",
+      "Set submit to true to safely fill and submit in one call. The result includes a fresh compact " +
+      "observation; continue from its refs without a separate read or snapshot.",
     parameters: z.object({
       ref: z
         .string()
@@ -355,7 +421,7 @@ export function ComputerTools() {
         detail={
           // Never show typed values; identify only the target field.
           labelOf(result) ??
-          (typeof args?.ref === "string" ? args.ref : undefined)
+          (typeof args?.ref === "string" ? "a field" : undefined)
         }
         refused={outcomeOf(result).refused === true}
         failed={didNotWork(outcomeOf(result))}
@@ -367,7 +433,8 @@ export function ComputerTools() {
     name: "computer_click",
     description:
       "Click something on the page: a button, a link, a checkbox or a radio option. Give the ref " +
-      "from your most recent snapshot and the snapshotId it came from.",
+      "from your most recent observation and the snapshotId it came from. The result includes the " +
+      "changed page text and fresh refs, so continue from that observation.",
     parameters: z.object({
       ref: z
         .string()
@@ -402,7 +469,7 @@ export function ComputerTools() {
             outcome.refused === true
               ? String(outcome.reason ?? "")
               : (labelOf(result) ??
-                (typeof args?.ref === "string" ? args.ref : undefined))
+                (typeof args?.ref === "string" ? "a control" : undefined))
           }
           refused={outcome.refused === true}
           failed={didNotWork(outcome)}

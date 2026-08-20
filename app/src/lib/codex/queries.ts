@@ -45,11 +45,20 @@ export type CodexUsage = {
   };
 };
 
+export type CodexPreferences = {
+  model: string | null;
+  effort: "low" | "medium" | "high" | "xhigh" | "max" | null;
+};
+
+export type CodexModels = { data: unknown[]; nextCursor?: string | null };
+
 export const codexKeys = {
   all: ["codex"] as const,
   account: () => ["codex", "account"] as const,
   limits: () => ["codex", "limits"] as const,
   usage: () => ["codex", "usage"] as const,
+  models: () => ["codex", "models"] as const,
+  preferences: () => ["codex", "preferences"] as const,
 };
 
 export function capabilitiesQueryOptions() {
@@ -85,6 +94,35 @@ export function codexUsageQueryOptions(enabled: boolean) {
     enabled,
     refetchInterval: 60_000,
   });
+}
+
+export function codexModelsQueryOptions(enabled: boolean) {
+  return queryOptions({
+    queryKey: codexKeys.models(),
+    queryFn: () => request<CodexModels>("/api/codex/models"),
+    enabled,
+    staleTime: 5 * 60_000,
+  });
+}
+
+export function codexPreferencesQueryOptions(enabled: boolean) {
+  return queryOptions({
+    queryKey: codexKeys.preferences(),
+    queryFn: () =>
+      request<{
+        preferences: CodexPreferences;
+        effortLevels: CodexPreferences["effort"][];
+      }>("/api/codex/preferences"),
+    enabled,
+  });
+}
+
+export function updateCodexPreferences(preferences: CodexPreferences) {
+  return request<{ preferences: CodexPreferences }>("/api/codex/preferences", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(preferences),
+  }).then((result) => result.preferences);
 }
 
 export function startCodexDeviceLogin() {

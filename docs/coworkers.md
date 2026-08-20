@@ -49,12 +49,25 @@ Deleting is soft. The coworker stops running, but existing channels remain reada
 
 Hiding is personal roster state. It removes the coworker from one user's list without disabling the coworker for anyone else.
 
+## Team templates
+
+The `/agents` page can export user-owned coworkers to a versioned Kayco team
+template and import a template as new private coworkers. The portable file
+contains only the team name and each coworker's name, title, and standing role.
+
+The server discards unknown fields and never imports runtime ids, endpoints,
+authorization headers, credentials, grants, messages, ownership, visibility,
+browser state, or files. Imported coworkers receive new ids, use the managed
+AG-UI endpoint, and stay private until their owner makes a separate sharing
+decision. Name collisions receive an `(imported)` suffix. Imports are atomic
+and limited to 25 coworkers.
+
 ## Default endpoint
 
 Product-created coworkers use:
 
 ```dotenv
-MANAGED_AGENT_AG_UI_URL=http://localhost:4200/ag-ui
+MANAGED_AGENT_AG_UI_URL=http://localhost:4201/ag-ui
 ```
 
 The server requires this setting at startup. Package-provided agents use their own `agents.yaml` configuration.
@@ -85,6 +98,12 @@ In the product, create or edit a coworker from `/agents` and set:
 Endpoint registration uses target checks. Cloud metadata addresses are refused under every configuration. Optional keys are write-only: sending a key stores/replaces it, omitting it keeps the existing key, and APIs do not return it.
 
 `POST /api/agents/test-connection` checks whether an endpoint answers before saving it.
+
+## Tool callback credential
+
+A remote coworker can talk without a callback credential, but it needs one to use granted MCP tools. In the coworker's profile, choose **Generate token**, copy the token immediately, and configure the remote agent to send it as `x-openbot-agent-token` when it calls `/api/agent-tools/call`.
+
+The token is shown once. Kayco stores only its hash, so a lost token must be rotated. Rotation immediately replaces the old token; revocation removes tool access without disabling conversation. The server also requires the signed `openbotRun` value supplied with that AG-UI run, which prevents one coworker from borrowing another coworker's grants or actor identity. For a channel task, that assertion also carries the server-validated task and channel identity so an MCP call can pause for approval and continue after the exact request is approved.
 
 ## Capabilities
 

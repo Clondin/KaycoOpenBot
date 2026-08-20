@@ -17,6 +17,11 @@ import type {
   AgentProfile,
   CreateAgentInput,
 } from "./profile-types";
+import {
+  MAX_TEAM_MEMBERS,
+  parseTeamTemplate,
+  teamTemplateFrom,
+} from "./team-template";
 
 type AgentInputParseResult =
   | { ok: true; value: CreateAgentInput }
@@ -131,6 +136,81 @@ export function createAgentRoutes(
   auditStore?: AuditStore,
 ) {
   const routes = new Hono<{ Variables: AppVariables }>();
+
+  routes.post("/team-template/export", requireUser, async (context) => {
+    const body = (await context.req.json().catch(() => null)) as {
+      name?: unknown;
+      agentIds?: unknown;
+    } | null;
+    const name = boundedText(
+      body?.name,
+      120,
+      "Team name must be text between 1 and 120 characters.",
+    );
+    if (typeof name !== "string")
+      return context.json({ error: name.error }, 400);
+    if (
+      !Array.isArray(body?.agentIds) ||
+      body.agentIds.length === 0 ||
+      body.agentIds.length > MAX_TEAM_MEMBERS ||
+      body.agentIds.some((id) => typeof id !== "string" || !id.trim())
+    ) {
+      return context.json(
+        { error: `Choose between 1 and ${MAX_TEAM_MEMBERS} coworkers.` },
+        400,
+      );
+    }
+
+    try {
+      const profiles = await store.exportTeam(
+        context.var.actor,
+        body.agentIds.map((id) => String(id).trim()),
+      );
+      const template = teamTemplateFrom(name, profiles);
+      await recordTemplateEvent(
+        context,
+        auditStore,
+        "team_template.exported",
+        profiles.length,
+      );
+      context.header(
+        "content-disposition",
+        `attachment; filename="${safeFilename(name)}.kayco-team.json"`,
+      );
+      return context.json(template);
+    } catch (error) {
+      return mapStoreError(context, error);
+    }
+  });
+
+  routes.post("/team-template/import", requireUser, async (context) => {
+    const parsed = parseTeamTemplate(
+      await context.req.json().catch(() => null),
+    );
+    if (!parsed.ok) return context.json({ error: parsed.error }, 400);
+    try {
+      const profiles = await store.importTeam(
+        context.var.actor,
+        parsed.value.coworkers,
+      );
+      await recordTemplateEvent(
+        context,
+        auditStore,
+        "team_template.imported",
+        profiles.length,
+      );
+      return context.json(
+        {
+          agents: profiles.map((profile) =>
+            agentDto(context.var.actor, profile),
+          ),
+        },
+        201,
+      );
+    } catch (error) {
+      return mapStoreError(context, error);
+    }
+  });
 
   /**
    * The Bot declined something, and says so.
@@ -307,6 +387,30 @@ export function createAgentRoutes(
     }
   });
 
+  routes.post("/:agentId/callback-token", requireUser, async (context) => {
+    try {
+      const token = await store.issueCallbackToken(
+        context.var.actor,
+        context.req.param("agentId"),
+      );
+      return context.json({ token }, 201);
+    } catch (error) {
+      return mapStoreError(context, error);
+    }
+  });
+
+  routes.delete("/:agentId/callback-token", requireUser, async (context) => {
+    try {
+      await store.revokeCallbackToken(
+        context.var.actor,
+        context.req.param("agentId"),
+      );
+      return context.body(null, 204);
+    } catch (error) {
+      return mapStoreError(context, error);
+    }
+  });
+
   routes.delete("/:agentId", requireUser, async (context) => {
     try {
       await store.softDelete(context.var.actor, context.req.param("agentId"));
@@ -317,6 +421,32 @@ export function createAgentRoutes(
   });
 
   return routes;
+}
+
+function safeFilename(name: string) {
+  return (
+    name
+      .normalize("NFKD")
+      .replace(/[^a-zA-Z0-9._-]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 80) || "kayco-team"
+  );
+}
+
+async function recordTemplateEvent(
+  context: Context<{ Variables: AppVariables }>,
+  auditStore: AuditStore | undefined,
+  eventType: "team_template.exported" | "team_template.imported",
+  count: number,
+) {
+  if (!auditStore) return;
+  const actor = context.var.actor;
+  await recordAuditEvent(auditStore, {
+    eventType,
+    targetType: "team_template",
+    ...(actor.email !== DEV_ACTOR_EMAIL ? { actorUserId: actor.id } : {}),
+    payload: { actor: actor.email, coworkerCount: count },
+  });
 }
 
 function boundedText(
@@ -345,6 +475,7 @@ function agentDto(actor: AgentActor, agent: AgentProfile) {
     // and any credential for it lives in the vault, never in this row.
     endpoint: agent.endpoint,
     hasAuth: agent.hasAuth,
+    hasCallbackToken: agent.hasCallbackToken,
     canManage: canManageAgent(actor, agent),
     // Ownership, kept separate from permission. `canManage` is also true for an administrator on
     // another user's coworker, so a roster that split "mine" on it would file other people's work

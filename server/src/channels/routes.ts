@@ -1,4 +1,4 @@
-import { and, asc, eq, isNull, lt, or, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import type { Context, MiddlewareHandler } from "hono";
 import { Hono } from "hono";
 import {
@@ -14,6 +14,7 @@ import {
   channelMemberships,
   channels,
   intelligenceChannelMappings,
+  messageReactions,
 } from "../db/schema";
 import {
   CHANNEL_ACTIVITY_TOPIC,
@@ -47,6 +48,16 @@ export type ChannelActivity = {
   at: Date;
 };
 
+export const MESSAGE_REACTION_EMOJIS = ["👍", "❤️", "🎉", "👀", "✅"] as const;
+export type MessageReactionEmoji = (typeof MESSAGE_REACTION_EMOJIS)[number];
+
+export type MessageReaction = {
+  messageId: string;
+  emoji: MessageReactionEmoji;
+  count: number;
+  mine: boolean;
+};
+
 export type ChannelStore = {
   create(actor: AgentActor, agentIds: string[]): Promise<AgentChannel>;
   get(actor: AgentActor, channelId: string): Promise<AgentChannel | null>;
@@ -55,6 +66,18 @@ export type ChannelStore = {
     actor: AgentActor,
     channelId: string,
     activity: ChannelActivity,
+  ): Promise<void>;
+  reactions(
+    actor: AgentActor,
+    channelId: string,
+    messageIds: string[],
+  ): Promise<MessageReaction[]>;
+  setReaction(
+    actor: AgentActor,
+    channelId: string,
+    messageId: string,
+    emoji: MessageReactionEmoji,
+    active: boolean,
   ): Promise<void>;
 };
 
@@ -336,7 +359,87 @@ export function createChannelStore(
         { isolationLevel: "read committed" },
       );
     },
+
+    async reactions(actor, channelId, messageIds) {
+      await requireChannelMembership(database, actor, channelId);
+      if (messageIds.length === 0) return [];
+
+      const rows = await database
+        .select({
+          messageId: messageReactions.messageId,
+          emoji: messageReactions.emoji,
+          userId: messageReactions.userId,
+        })
+        .from(messageReactions)
+        .where(
+          and(
+            eq(messageReactions.channelId, channelId),
+            inArray(messageReactions.messageId, messageIds),
+          ),
+        );
+
+      const grouped = new Map<string, MessageReaction>();
+      for (const row of rows) {
+        if (!isMessageReactionEmoji(row.emoji)) continue;
+        const key = `${row.messageId}\u0000${row.emoji}`;
+        const current = grouped.get(key);
+        if (current) {
+          current.count += 1;
+          current.mine ||= row.userId === actor.id;
+        } else {
+          grouped.set(key, {
+            messageId: row.messageId,
+            emoji: row.emoji,
+            count: 1,
+            mine: row.userId === actor.id,
+          });
+        }
+      }
+      return [...grouped.values()];
+    },
+
+    setReaction(actor, channelId, messageId, emoji, active) {
+      return database.transaction(async (transaction) => {
+        await requireChannelMembership(transaction, actor, channelId);
+        if (active) {
+          await transaction
+            .insert(messageReactions)
+            .values({ channelId, messageId, emoji, userId: actor.id })
+            .onConflictDoNothing();
+          return;
+        }
+        await transaction
+          .delete(messageReactions)
+          .where(
+            and(
+              eq(messageReactions.channelId, channelId),
+              eq(messageReactions.messageId, messageId),
+              eq(messageReactions.emoji, emoji),
+              eq(messageReactions.userId, actor.id),
+            ),
+          );
+      });
+    },
   };
+}
+
+type ChannelReadExecutor = Pick<Database, "select">;
+
+async function requireChannelMembership(
+  executor: ChannelReadExecutor,
+  actor: AgentActor,
+  channelId: string,
+) {
+  const [membership] = await executor
+    .select({ channelId: channelMemberships.channelId })
+    .from(channelMemberships)
+    .where(
+      and(
+        eq(channelMemberships.channelId, channelId),
+        eq(channelMemberships.userId, actor.id),
+      ),
+    );
+  if (!membership) throw new ChannelNotFoundError(channelId);
 }
 
 export class ChannelNotFoundError extends Error {
@@ -421,6 +524,71 @@ export function parseActivityInput(input: unknown): ActivityInputParseResult {
   };
 }
 
+function isMessageReactionEmoji(value: unknown): value is MessageReactionEmoji {
+  return (
+    typeof value === "string" &&
+    (MESSAGE_REACTION_EMOJIS as readonly string[]).includes(value)
+  );
+}
+
+function parseReactionQuery(input: unknown) {
+  const messageIds =
+    input && typeof input === "object" && !Array.isArray(input)
+      ? (input as { messageIds?: unknown }).messageIds
+      : undefined;
+  if (!Array.isArray(messageIds) || messageIds.length > 200) {
+    return {
+      ok: false as const,
+      error: "Message IDs must be an array of at most 200 items.",
+    };
+  }
+  const normalized = messageIds.map((id) =>
+    typeof id === "string" ? id.trim() : "",
+  );
+  if (normalized.some((id) => !id || id.length > 200)) {
+    return {
+      ok: false as const,
+      error: "Message IDs must be non-empty strings of at most 200 characters.",
+    };
+  }
+  return { ok: true as const, value: [...new Set(normalized)] };
+}
+
+function parseReactionInput(input: unknown) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    return {
+      ok: false as const,
+      error: "Reaction input must be a JSON object.",
+    };
+  }
+  const body = input as {
+    messageId?: unknown;
+    emoji?: unknown;
+    active?: unknown;
+  };
+  const messageId =
+    typeof body.messageId === "string" ? body.messageId.trim() : "";
+  if (!messageId || messageId.length > 200) {
+    return {
+      ok: false as const,
+      error: "Message ID must be between 1 and 200 characters.",
+    };
+  }
+  if (!isMessageReactionEmoji(body.emoji)) {
+    return { ok: false as const, error: "That reaction is not supported." };
+  }
+  if (typeof body.active !== "boolean") {
+    return {
+      ok: false as const,
+      error: "Reaction state must be true or false.",
+    };
+  }
+  return {
+    ok: true as const,
+    value: { messageId, emoji: body.emoji, active: body.active },
+  };
+}
+
 export function createChannelRoutes(
   store: ChannelStore,
   requireUser: MiddlewareHandler<{ Variables: AppVariables }>,
@@ -487,6 +655,42 @@ export function createChannelRoutes(
         context.var.actor,
         context.req.param("channelId"),
         parsed.value,
+      );
+      return context.body(null, 204);
+    } catch (error) {
+      return mapStoreError(context, error);
+    }
+  });
+
+  routes.post("/:channelId/reactions/query", requireUser, async (context) => {
+    const parsed = parseReactionQuery(
+      await context.req.json().catch(() => null),
+    );
+    if (!parsed.ok) return context.json({ error: parsed.error }, 400);
+    try {
+      const reactions = await store.reactions(
+        context.var.actor,
+        context.req.param("channelId"),
+        parsed.value,
+      );
+      return context.json({ reactions });
+    } catch (error) {
+      return mapStoreError(context, error);
+    }
+  });
+
+  routes.put("/:channelId/reactions", requireUser, async (context) => {
+    const parsed = parseReactionInput(
+      await context.req.json().catch(() => null),
+    );
+    if (!parsed.ok) return context.json({ error: parsed.error }, 400);
+    try {
+      await store.setReaction(
+        context.var.actor,
+        context.req.param("channelId"),
+        parsed.value.messageId,
+        parsed.value.emoji,
+        parsed.value.active,
       );
       return context.body(null, 204);
     } catch (error) {
