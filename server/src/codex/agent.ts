@@ -8,9 +8,10 @@ import { z } from "zod";
 import type { DeploymentConfig } from "../config";
 import {
   type GrantedTool,
-  toolRunContext,
   type ToolRunContext,
+  toolRunContext,
 } from "../plugins/tools";
+import type { CodexPreferences } from "./preferences";
 import {
   CODEX_REQUEST_NOT_HANDLED,
   type CodexAgentClient,
@@ -18,10 +19,10 @@ import {
   CodexRpcError,
 } from "./protocol";
 import type { CodexThreadStore } from "./thread-store";
-import type { CodexPreferences } from "./preferences";
 
 type ThreadResponse = { thread: { id: string } };
 type TurnResponse = { turn: { id: string } };
+const CODEX_REASONING_SUMMARY = "detailed" as const;
 type DynamicToolCall = {
   threadId?: string;
   turnId?: string;
@@ -211,6 +212,15 @@ export class CodexAgent extends AbstractAgent {
     let reasoningHasContent = false;
     let reasoningSegment: string | undefined;
     let delegatedTool = false;
+    let completionStatus = "pending";
+    const streamTrace = {
+      notifications: 0,
+      reasoningSummaryDeltas: 0,
+      reasoningTextDeltas: 0,
+      reasoningCharacters: 0,
+      answerDeltas: 0,
+      answerCharacters: 0,
+    };
     let resolveCompleted!: () => void;
     let rejectCompleted!: (error: Error) => void;
     const completed = new Promise<void>((resolve, reject) => {
@@ -304,12 +314,19 @@ export class CodexAgent extends AbstractAgent {
         if (event.threadId !== session.threadId) return;
         const eventTurnId = turnIdFrom(event);
         if (turnId && eventTurnId && eventTurnId !== turnId) return;
+        streamTrace.notifications += 1;
 
         if (
           method === "item/reasoning/summaryTextDelta" ||
           method === "item/reasoning/textDelta"
         ) {
           const delta = typeof event.delta === "string" ? event.delta : "";
+          if (method === "item/reasoning/summaryTextDelta") {
+            streamTrace.reasoningSummaryDeltas += 1;
+          } else {
+            streamTrace.reasoningTextDeltas += 1;
+          }
+          streamTrace.reasoningCharacters += delta.length;
           if (!delta || subscriber.closed) return;
           const itemId =
             typeof event.itemId === "string" ? event.itemId : input.runId;
@@ -339,6 +356,8 @@ export class CodexAgent extends AbstractAgent {
 
         if (method === "item/agentMessage/delta" && !delegatedTool) {
           const delta = typeof event.delta === "string" ? event.delta : "";
+          streamTrace.answerDeltas += 1;
+          streamTrace.answerCharacters += delta.length;
           if (!delta || subscriber.closed) return;
           closeReasoning();
           const nextMessageId =
@@ -368,6 +387,7 @@ export class CodexAgent extends AbstractAgent {
           closeText();
           const turn = asRecord(event.turn);
           if (turn.status === "failed") {
+            completionStatus = "failed";
             const turnError = asRecord(turn.error);
             rejectCompleted(
               new Error(
@@ -379,6 +399,7 @@ export class CodexAgent extends AbstractAgent {
               ),
             );
           } else {
+            completionStatus = "completed";
             resolveCompleted();
           }
         }
@@ -475,6 +496,7 @@ export class CodexAgent extends AbstractAgent {
         ...(this.options.preferences?.effort
           ? { effort: this.options.preferences.effort }
           : {}),
+        summary: CODEX_REASONING_SUMMARY,
       });
       turnId = started.turn?.id;
       if (!turnId) throw new Error("Codex did not start a turn.");
@@ -485,6 +507,16 @@ export class CodexAgent extends AbstractAgent {
       unsubscribeTool();
       closeReasoning();
       closeText();
+      console.info(
+        JSON.stringify({
+          type: "codex-turn-stream",
+          runId: input.runId,
+          completionStatus,
+          requestedSummary: CODEX_REASONING_SUMMARY,
+          subscriberClosed: subscriber.closed,
+          ...streamTrace,
+        }),
+      );
     }
   }
 }
