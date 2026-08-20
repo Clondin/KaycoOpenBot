@@ -2,6 +2,7 @@ import type { Message } from "@ag-ui/core";
 import {
   attachmentInputPart,
   type ComposerAttachment,
+  type ComposerDraft,
 } from "@/components/channels/composer";
 
 /**
@@ -57,6 +58,10 @@ export type FirstMessage = {
 
 const firstMessages = new Map<string, FirstMessage>();
 const assignedWork = new Map<string, { text: string; runId: string }>();
+const routedMessages = new Map<
+  string,
+  { draft: ComposerDraft; skillInstructions: string[] }
+>();
 
 export function stashFirstMessage(
   channelId: string,
@@ -88,4 +93,33 @@ export function takeAssignedWork(
   const work = assignedWork.get(channelId) ?? null;
   assignedWork.delete(channelId);
   return work;
+}
+
+function routedMessageKey(channelId: string, agentId: string) {
+  return `${channelId}:${agentId}`;
+}
+
+/** Carry a message across the intentional remount used when an @mention switches coworkers. */
+export function stashRoutedMessage(
+  channelId: string,
+  agentId: string,
+  draft: ComposerDraft,
+  skillInstructions: readonly string[],
+): void {
+  routedMessages.set(routedMessageKey(channelId, agentId), {
+    draft: {
+      ...draft,
+      attachments: [...draft.attachments],
+      commandIds: [...draft.commandIds],
+    },
+    skillInstructions: [...skillInstructions],
+  });
+}
+
+/** Destructive take prevents React remounts from sending the routed message twice. */
+export function takeRoutedMessage(channelId: string, agentId: string) {
+  const key = routedMessageKey(channelId, agentId);
+  const message = routedMessages.get(key) ?? null;
+  routedMessages.delete(key);
+  return message;
 }

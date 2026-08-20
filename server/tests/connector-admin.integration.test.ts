@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { eq } from "drizzle-orm";
 import { createConnectorAdminService } from "../src/connectors";
+import { createAuditStore } from "../src/audit";
 import type { CredentialAdminService } from "../src/credentials";
 import { createDatabase } from "../src/db/client";
 import { TEST_POOL } from "./support/database";
@@ -56,7 +57,12 @@ const credentials = {
   },
 } as unknown as CredentialAdminService;
 
-const service = createConnectorAdminService(sources, database, credentials);
+const service = createConnectorAdminService(
+  sources,
+  database,
+  credentials,
+  createAuditStore(database),
+);
 
 async function removeGoogleDriveInstance() {
   await database

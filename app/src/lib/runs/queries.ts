@@ -17,12 +17,27 @@ export type TaskRun = {
   title: string;
   status: TaskRunStatus;
   parentRunId: string | null;
+  attempt: number;
+  maxAttempts: number;
+  maxRuntimeMs: number;
+  leaseExpiresAt: string | null;
+  nextAttemptAt: string | null;
+  output: string | null;
   error: string | null;
   startedAt: string | null;
   completedAt: string | null;
   lastHeartbeatAt: string | null;
   createdAt: string;
   updatedAt: string;
+};
+
+export type TaskRunEvent = {
+  id: string;
+  runId: string;
+  sequence: number;
+  type: string;
+  payload: Record<string, unknown>;
+  createdAt: string;
 };
 
 export type ApprovalStatus =
@@ -54,6 +69,7 @@ export const runKeys = {
   all: ["task-runs"] as const,
   channel: (channelId: string) => ["task-runs", "channel", channelId] as const,
   detail: (runId: string) => ["task-runs", "detail", runId] as const,
+  events: (runId: string) => ["task-runs", runId, "events"] as const,
   approvals: (runId: string) => ["task-runs", runId, "approvals"] as const,
 };
 
@@ -90,11 +106,28 @@ export function runApprovalsQueryOptions(runId: string) {
   });
 }
 
+export function runEventsQueryOptions(runId: string) {
+  return queryOptions({
+    queryKey: runKeys.events(runId),
+    queryFn: async (): Promise<TaskRunEvent[]> => {
+      const response = await fetch(
+        `/api/runs/${encodeURIComponent(runId)}/events`,
+        { credentials: "include" },
+      );
+      if (!response.ok) throw new Error("Could not load task activity.");
+      return ((await response.json()) as { events: TaskRunEvent[] }).events;
+    },
+    refetchInterval: 2_000,
+  });
+}
+
 export async function createTaskRun(input: {
   channelId: string;
   agentId: string;
   title?: string;
   parentRunId?: string;
+  maxAttempts?: number;
+  maxRuntimeMs?: number;
 }) {
   const response = await fetch("/api/runs", {
     method: "POST",

@@ -5,8 +5,8 @@ FROM oven/bun:1.3.14-alpine
 WORKDIR /app
 RUN chown bun:bun /app
 USER bun
-COPY --chown=bun:bun agent-bot/package.json ./agent-bot/
-RUN cd agent-bot && bun install
+COPY --chown=bun:bun agent-bot/package.json agent-bot/bun.lock ./agent-bot/
+RUN cd agent-bot && bun install --frozen-lockfile
 
 # Preserve the repo layout so `../../shared/bot-prompt` resolves the same in the image and locally.
 COPY --chown=bun:bun shared ./shared

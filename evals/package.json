@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "build": "tsc --noEmit",
-    "eval": "bun src/policy-suite.ts",
+    "eval": "bun src/policy-suite.ts && bun src/knowledge-suite.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

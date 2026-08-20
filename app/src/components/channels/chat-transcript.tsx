@@ -1,9 +1,29 @@
 import type { Message } from "@ag-ui/core";
-import { IconBox, IconFile, IconPhoto } from "@tabler/icons-react";
+import {
+  IconBox,
+  IconBook2,
+  IconCheck,
+  IconCopy,
+  IconEdit,
+  IconExternalLink,
+  IconFile,
+  IconGitBranch,
+  IconPhoto,
+  IconQuote,
+  IconRefresh,
+} from "@tabler/icons-react";
 import { useRenderToolCall } from "@copilotkit/react-core/v2";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { motion, useReducedMotion } from "motion/react";
-import { memo, useCallback, useEffect, useMemo, useRef } from "react";
+import {
+  memo,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { Streamdown } from "streamdown";
 import { markdownComponents } from "@/lib/markdown";
 import { EASE_OUT, ENTRANCE_SECONDS } from "@/lib/motion";
@@ -20,6 +40,7 @@ import { Bubble, BubbleContent } from "@/components/ui/bubble";
 import {
   MessageContent,
   MessageFooter,
+  MessageHeader,
   Message as MessageRow,
 } from "@/components/ui/message";
 import {
@@ -32,11 +53,14 @@ import {
   useMessageScroller,
 } from "@/components/ui/message-scroller";
 import { toVisibleChatItems, type VisibleAttachment } from "./chat-messages";
+import { parseKnowledgeCitations } from "./knowledge-citations";
 import type { QueuedMessage } from "./composer";
 import { ToolLine } from "./tool-line";
 import { ToolRenderBoundary } from "./tool-boundary";
 
 type ChatTranscriptProps = {
+  /** Live task progress belongs in the turn, beside the messages that caused it. */
+  activity?: ReactNode;
   busy?: boolean;
   /** Comma-separated `/` command names, used to tell a skill chip from a leading slash. */
   commandNames?: string;
@@ -60,6 +84,11 @@ type ChatTranscriptProps = {
   channelId?: string;
   searchQuery?: string;
   activeSearchMessageId?: string;
+  onQuoteMessage?: (text: string, role: "user" | "assistant") => void;
+  onEditMessage?: (text: string) => void;
+  onRetryMessage?: () => void;
+  onBranchMessage?: (text: string, role: "user" | "assistant") => void;
+  assistantName?: string;
 };
 
 /** One shared empty array, so a screen without a queue does not hand down a new one per render. */
@@ -375,27 +404,37 @@ function Arriving({
 const TranscriptMessage = memo(function TranscriptMessage({
   activeSearch = false,
   attachments = [],
+  assistantName = "Coworker",
   commandNames = "",
   delay,
   id,
   matchedSearch = false,
+  onBranch,
+  onEdit,
+  onQuote,
   onReact,
+  onRetry,
   reactions = [],
   role,
   text,
 }: {
   activeSearch?: boolean;
   attachments?: readonly VisibleAttachment[];
+  assistantName?: string;
   commandNames?: string;
   delay: number;
   id: string;
   matchedSearch?: boolean;
+  onBranch?: (text: string, role: "user" | "assistant") => void;
+  onEdit?: (text: string) => void;
+  onQuote?: (text: string, role: "user" | "assistant") => void;
   onReact?: (
     messageId: string,
     emoji: MessageReactionEmoji,
     active: boolean,
   ) => void;
   reactions?: readonly MessageReaction[];
+  onRetry?: () => void;
   role: "user" | "assistant";
   text: string;
 }) {
@@ -407,6 +446,7 @@ const TranscriptMessage = memo(function TranscriptMessage({
     <MessageRow align={align} data-transcript-message-id={id}>
       <MessageContent>
         <Arriving delay={delay}>
+          {!isUser ? <MessageHeader>{assistantName}</MessageHeader> : null}
           <Bubble
             align={align}
             className={
@@ -459,13 +499,133 @@ const TranscriptMessage = memo(function TranscriptMessage({
             </BubbleContent>
           </Bubble>
         </Arriving>
-        {onReact ? (
-          <ReactionBar messageId={id} onReact={onReact} reactions={reactions} />
-        ) : null}
+        <div className="flex flex-wrap items-center gap-1">
+          <MessageActionBar
+            onBranch={onBranch}
+            onEdit={isUser ? onEdit : undefined}
+            onQuote={onQuote}
+            onRetry={!isUser ? onRetry : undefined}
+            role={role}
+            text={text}
+          />
+          {onReact ? (
+            <ReactionBar
+              messageId={id}
+              onReact={onReact}
+              reactions={reactions}
+            />
+          ) : null}
+        </div>
       </MessageContent>
     </MessageRow>
   );
 });
+
+function MessageActionBar({
+  onBranch,
+  onEdit,
+  onQuote,
+  onRetry,
+  role,
+  text,
+}: {
+  onBranch?: (text: string, role: "user" | "assistant") => void;
+  onEdit?: (text: string) => void;
+  onQuote?: (text: string, role: "user" | "assistant") => void;
+  onRetry?: () => void;
+  role: "user" | "assistant";
+  text: string;
+}) {
+  const [copied, setCopied] = useState(false);
+  const actionClass =
+    "inline-flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
+
+  return (
+    <MessageFooter className="gap-0.5 opacity-0 transition-opacity group-hover/message:opacity-100 focus-within:opacity-100">
+      <button
+        aria-label={copied ? "Copied message" : "Copy message"}
+        className={actionClass}
+        onClick={() => {
+          void copyText(text).then(() => {
+            setCopied(true);
+            window.setTimeout(() => setCopied(false), 1_500);
+          });
+        }}
+        title={copied ? "Copied" : "Copy"}
+        type="button"
+      >
+        {copied ? (
+          <IconCheck className="size-3.5" />
+        ) : (
+          <IconCopy className="size-3.5" />
+        )}
+      </button>
+      {onQuote ? (
+        <button
+          aria-label="Quote message in reply"
+          className={actionClass}
+          onClick={() => onQuote(text, role)}
+          title="Quote in reply"
+          type="button"
+        >
+          <IconQuote className="size-3.5" />
+        </button>
+      ) : null}
+      {onEdit ? (
+        <button
+          aria-label="Edit and resend message"
+          className={actionClass}
+          onClick={() => onEdit(text)}
+          title="Edit and resend"
+          type="button"
+        >
+          <IconEdit className="size-3.5" />
+        </button>
+      ) : null}
+      {onRetry ? (
+        <button
+          aria-label="Retry the latest response"
+          className={actionClass}
+          onClick={onRetry}
+          title="Retry response"
+          type="button"
+        >
+          <IconRefresh className="size-3.5" />
+        </button>
+      ) : null}
+      {onBranch ? (
+        <button
+          aria-label="Continue from this message in a new conversation"
+          className={actionClass}
+          onClick={() => onBranch(text, role)}
+          title="Continue in new conversation"
+          type="button"
+        >
+          <IconGitBranch className="size-3.5" />
+        </button>
+      ) : null}
+    </MessageFooter>
+  );
+}
+
+async function copyText(text: string) {
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return;
+    } catch {
+      // Sandboxed contexts can expose the API and still deny it; use the selection fallback.
+    }
+  }
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  document.body.append(textarea);
+  textarea.select();
+  document.execCommand("copy");
+  textarea.remove();
+}
 
 function MessageAttachments({
   attachments,
@@ -599,6 +759,14 @@ const TranscriptToolCall = memo(function TranscriptToolCall({
         }),
   });
 
+  if (name === "openbot_search_knowledge") {
+    return (
+      <Arriving delay={delay}>
+        <KnowledgeSources result={result} />
+      </Arriving>
+    );
+  }
+
   return (
     <Arriving delay={delay}>
       <ToolRenderBoundary name={name}>
@@ -617,6 +785,90 @@ const TranscriptToolCall = memo(function TranscriptToolCall({
     </Arriving>
   );
 });
+
+function KnowledgeSources({ result }: { result?: string }) {
+  const citations =
+    result === undefined ? null : parseKnowledgeCitations(result);
+  if (citations === null) {
+    return (
+      <ToolLine
+        label="Searching company knowledge"
+        running={result === undefined}
+      >
+        {result === undefined
+          ? null
+          : "The knowledge search returned an unreadable result."}
+      </ToolLine>
+    );
+  }
+  if (citations.length === 0) {
+    return (
+      <ToolLine label="Searched company knowledge">
+        No matching sources were found.
+      </ToolLine>
+    );
+  }
+  return (
+    <details className="group/sources overflow-hidden rounded-xl border bg-card shadow-xs">
+      <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2.5 outline-none hover:bg-muted/40 focus-visible:ring-3 focus-visible:ring-ring/50">
+        <IconBook2 className="size-4 shrink-0 text-primary" />
+        <span className="font-medium text-sm">Sources</span>
+        <span className="rounded-full bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">
+          {citations.length}
+        </span>
+        <span className="ml-auto text-xs text-muted-foreground group-open/sources:hidden">
+          View evidence
+        </span>
+      </summary>
+      <ol className="grid gap-1 border-t p-2">
+        {citations.map((citation) => {
+          const href = safeHttpUrl(citation.url);
+          return (
+            <li
+              className="rounded-lg px-2 py-2 hover:bg-muted/40"
+              key={`${citation.citation}:${citation.url}`}
+            >
+              <div className="flex items-start gap-2">
+                <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-primary/10 font-medium text-[11px] text-primary">
+                  {citation.citation}
+                </span>
+                <div className="min-w-0 flex-1">
+                  {href ? (
+                    <a
+                      className="inline-flex max-w-full items-center gap-1 font-medium text-sm underline-offset-4 hover:underline"
+                      href={href}
+                      rel="noreferrer"
+                      target="_blank"
+                    >
+                      <span className="truncate">{citation.title}</span>
+                      <IconExternalLink className="size-3 shrink-0" />
+                    </a>
+                  ) : (
+                    <p className="font-medium text-sm">{citation.title}</p>
+                  )}
+                  <p className="mt-1 line-clamp-3 text-xs leading-relaxed text-muted-foreground">
+                    {citation.excerpt}
+                  </p>
+                </div>
+              </div>
+            </li>
+          );
+        })}
+      </ol>
+    </details>
+  );
+}
+
+function safeHttpUrl(value: string): string | null {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" || url.protocol === "http:"
+      ? url.toString()
+      : null;
+  } catch {
+    return null;
+  }
+}
 
 function ServerToolLine({ name, result }: { name: string; result?: string }) {
   const { label, detail } = readToolName(name);
@@ -641,11 +893,17 @@ function ServerToolLine({ name, result }: { name: string; result?: string }) {
 }
 
 export function ChatTranscript({
+  activity,
+  assistantName,
   busy = false,
   channelId,
   commandNames = "",
   messages,
+  onBranchMessage,
+  onEditMessage,
+  onQuoteMessage,
   onRemoveQueued,
+  onRetryMessage,
   queued = EMPTY_QUEUE,
   searchQuery = "",
   activeSearchMessageId,
@@ -662,6 +920,9 @@ export function ChatTranscript({
    * which is where the 25x came from. This runs per render and is not worth guarding.
    */
   const items = toVisibleChatItems(messages);
+  const latestAssistantId = [...items]
+    .reverse()
+    .find((item) => item.kind === "text" && item.role === "assistant")?.id;
   const queryClient = useQueryClient();
   const messageIds = items.flatMap((item) =>
     item.kind === "text" ? [item.id] : [],
@@ -769,6 +1030,11 @@ export function ChatTranscript({
                 </MessageScrollerItem>
               ) : (
                 <MessageScrollerItem
+                  className={
+                    item.role === "user" && index > 0
+                      ? "mt-4 border-t border-border/60 pt-6"
+                      : undefined
+                  }
                   key={item.id}
                   messageId={item.id}
                   scrollAnchor={item.role === "user"}
@@ -776,6 +1042,7 @@ export function ChatTranscript({
                   <TranscriptMessage
                     activeSearch={item.id === activeSearchMessageId}
                     attachments={item.attachments}
+                    assistantName={assistantName}
                     commandNames={commandNames}
                     delay={delays.delayFor(item.id, index, items.length)}
                     id={item.id}
@@ -783,7 +1050,13 @@ export function ChatTranscript({
                       normalizedSearch.length > 0 &&
                       item.text.toLocaleLowerCase().includes(normalizedSearch)
                     }
+                    onBranch={onBranchMessage}
+                    onEdit={onEditMessage}
+                    onQuote={onQuoteMessage}
                     onReact={channelId ? react : undefined}
+                    onRetry={
+                      item.id === latestAssistantId ? onRetryMessage : undefined
+                    }
                     reactions={reactionsByMessage.get(item.id)}
                     role={item.role}
                     text={item.text}
@@ -804,6 +1077,7 @@ export function ChatTranscript({
             ) : waitingOnFirstToken ? (
               <Thinking />
             ) : null}
+            {activity ? <div className="min-w-0">{activity}</div> : null}
             {/*
              * Below the thinking line, and outside the item list for the same reason it is: these
              * are not yet turns. They have ids of their own, but they are this tab's ids and not the

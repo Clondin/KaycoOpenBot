@@ -86,6 +86,8 @@ function environmentFor(botId: string): string[] {
    * to set.
    */
   const computerToken = process.env.COMPUTER_TOKEN;
+  const allowPrivateHosts =
+    process.env.AGENT_COMPUTER_ALLOW_PRIVATE_HOSTS === "true";
   return [
     // Which Bot this container is. Read by the computer as the Bot to assume when a request does not
     // name one. It is normally named per request, so this is the fallback, and for a container that
@@ -93,6 +95,7 @@ function environmentFor(botId: string): string[] {
     `COMPUTER_BOT_ID=${botId}`,
     // Without this the computer refuses to start; it must never answer an unauthenticated caller.
     ...(computerToken ? [`COMPUTER_TOKEN=${computerToken}`] : []),
+    `AGENT_COMPUTER_ALLOW_PRIVATE_HOSTS=${allowPrivateHosts}`,
     // Where to ask what it is. Absent, the computer reports no identity and carries on.
     ...(spireSocketVolume
       ? ["SPIFFE_ENDPOINT_SOCKET=/tmp/spire-agent/public/api.sock"]

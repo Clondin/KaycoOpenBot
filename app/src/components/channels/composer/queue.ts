@@ -45,6 +45,7 @@ export type QueuedMessage = {
    */
   commandIds: string[];
   attachments: ComposerDraft["attachments"];
+  knowledgeRequested: boolean;
 };
 
 export type QueueAction =
@@ -105,6 +106,7 @@ export function reduceQueue(
               text: action.draft.text,
               commandIds: [...action.draft.commandIds],
               attachments: [...action.draft.attachments],
+              knowledgeRequested: action.draft.knowledgeRequested,
             },
           ]),
         };
@@ -117,6 +119,7 @@ export function reduceQueue(
             text: action.draft.text,
             commandIds: [...action.draft.commandIds],
             attachments: [...action.draft.attachments],
+            knowledgeRequested: action.draft.knowledgeRequested,
           },
         ],
         run: null,
@@ -163,6 +166,7 @@ function joinQueued(queue: readonly QueuedMessage[]): ComposerDraft {
     // paragraph in front of the Bot two times and say nothing new by doing it.
     commandIds: [...new Set(queue.flatMap((message) => message.commandIds))],
     attachments: queue.flatMap((message) => message.attachments),
+    knowledgeRequested: queue.some((message) => message.knowledgeRequested),
     isEmpty: false,
   };
 }

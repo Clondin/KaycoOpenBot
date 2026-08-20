@@ -235,17 +235,34 @@ export const credentials = pgTable("credentials", {
   updatedAt: updatedAt(),
 });
 
-export const connectorInstances = pgTable("connector_instances", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  type: connectorType("type").notNull(),
-  credentialId: uuid("credential_id").references(() => credentials.id, {
-    onDelete: "set null",
-  }),
-  status: syncStatus("status").notNull().default("pending"),
-  sourceMetadata: jsonb("source_metadata").notNull(),
-  createdAt: createdAt(),
-  updatedAt: updatedAt(),
-});
+export const connectorInstances = pgTable(
+  "connector_instances",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    type: connectorType("type").notNull(),
+    credentialId: uuid("credential_id").references(() => credentials.id, {
+      onDelete: "set null",
+    }),
+    status: syncStatus("status").notNull().default("pending"),
+    sourceMetadata: jsonb("source_metadata").notNull(),
+    lastSyncAt: timestamp("last_sync_at", { withTimezone: true }),
+    nextSyncAt: timestamp("next_sync_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    leaseOwner: text("lease_owner"),
+    leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
+    lastError: text("last_error"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    index("connector_instances_queue_idx").on(table.status, table.nextSyncAt),
+    index("connector_instances_lease_idx").on(
+      table.status,
+      table.leaseExpiresAt,
+    ),
+  ],
+);
 
 export const connectorCursors = pgTable("connector_cursors", {
   connectorInstanceId: uuid("connector_instance_id")
@@ -334,6 +351,10 @@ export const chunks = pgTable(
       table.position,
     ),
     index("chunks_document_idx").on(table.documentId),
+    index("chunks_embedding_hnsw_idx").using(
+      "hnsw",
+      table.embedding.op("vector_cosine_ops"),
+    ),
   ],
 );
 

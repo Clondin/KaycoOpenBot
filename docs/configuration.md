@@ -51,6 +51,37 @@ All four Intelligence values are required together. Missing any of them stops se
 
 Remote coworker callback tokens are generated from the coworker's profile and shown once. Put that value in the remote agent's `AGENT_TOOL_TOKEN` setting and point `OPENBOT_TOOL_URL` at this deployment's `/api/agent-tools/call` route. The server stores only the token hash and also verifies the short-lived signed run assertion carried in `forwardedProps.openbotRun`.
 
+## Knowledge synchronization
+
+The `connector-worker` requires `DATABASE_URL` and `KEY_ENCRYPTION_KEY`. Google
+Drive setup is completed in `/admin/connectors` with service-account JSON and a
+domain-wide-delegation subject; the secret is encrypted in the credential vault.
+
+| Variable                     | Default                       | Meaning                                                        |
+| ---------------------------- | ----------------------------- | -------------------------------------------------------------- |
+| `EMBEDDING_API_KEY`          | `OPENAI_API_KEY` or vault key | Dedicated OpenAI-compatible embedding key.                     |
+| `EMBEDDING_BASE_URL`         | `https://api.openai.com/v1`   | OpenAI-compatible embeddings API base URL.                     |
+| `EMBEDDING_MODEL`            | `text-embedding-3-small`      | Model that must return 1,536-dimensional vectors.              |
+| `CONNECTOR_POLL_MS`          | `10000`                       | How frequently an idle worker looks for a due connector.       |
+| `CONNECTOR_SYNC_INTERVAL_MS` | `300000`                      | Delay before a successful connector is due again.              |
+| `CONNECTOR_RETRY_MS`         | `60000`                       | Delay before retrying a failed connector.                       |
+
+The Google service account needs read access to the configured roots and Drive
+API domain-wide delegation for the impersonated user. Microsoft OneDrive can be
+declared in `knowledge.yaml`, but its worker adapter is not installed yet.
+Direct user, domain, and public Drive permissions work from the signed-in email.
+Group permissions require lower-case group emails or names to be provisioned in
+`users.groups`; Google sign-in does not expand directory group membership.
+
+## MCP authentication
+
+MCP servers support either bearer-token authentication or OAuth. OAuth uses the
+server's public URL to create `/api/plugins/oauth/callback`, so production must
+set `BETTER_AUTH_URL` to the externally reachable HTTPS API origin. Provider
+metadata, dynamic client registration, PKCE verifier, and tokens are encrypted
+in the credential vault. The callback requires the initiating administrator
+session and a matching state value.
+
 ## OpenAI-compatible endpoints
 
 `OPENAI_BASE_URL` decides where an OpenAI-shaped request is answered. Unset, that is OpenAI. Set, it
@@ -303,6 +334,13 @@ sources:
 ```
 
 Supported source types are `google-drive` and `microsoft-onedrive`.
+
+## Health and evidence
+
+Use `/health` for liveness and `/health/ready` for readiness. The readiness route
+does not disclose operational details; administrators can inspect the detailed
+report at `/api/admin/health`. Audit evidence bundles are downloaded from
+`/admin/audit` and are capped at 5,000 redacted events per export.
 
 ## Change workflow
 

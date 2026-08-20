@@ -42,6 +42,12 @@ export function createRunRoutes(
         ...(typeof body.parentRunId === "string"
           ? { parentRunId: body.parentRunId }
           : {}),
+        ...(typeof body.maxAttempts === "number"
+          ? { maxAttempts: body.maxAttempts }
+          : {}),
+        ...(typeof body.maxRuntimeMs === "number"
+          ? { maxRuntimeMs: body.maxRuntimeMs }
+          : {}),
       });
       return context.json({ run: runDto(run) }, 201);
     } catch (error) {

@@ -1,4 +1,4 @@
-import { IconRefresh } from "@tabler/icons-react";
+import { IconDownload, IconRefresh } from "@tabler/icons-react";
 import { useQuery } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 import { useState } from "react";
@@ -63,10 +63,20 @@ function AuditPage() {
      */
     <PageShell
       action={
-        <Button onClick={() => events.refetch()} size="sm" variant="ghost">
-          <IconRefresh />
-          Refresh
-        </Button>
+        <div className="flex gap-2">
+          <Button
+            onClick={() => downloadEvidence(search)}
+            size="sm"
+            variant="outline"
+          >
+            <IconDownload />
+            Download evidence
+          </Button>
+          <Button onClick={() => events.refetch()} size="sm" variant="ghost">
+            <IconRefresh />
+            Refresh
+          </Button>
+        </div>
       }
       description="Every action a Bot took, and every one this deployment's policy refused."
       title="Audit"
@@ -119,6 +129,22 @@ function AuditPage() {
       </PageSection>
     </PageShell>
   );
+}
+
+async function downloadEvidence(search: string) {
+  const response = await fetch(`/api/admin/audit-evidence${search}`, {
+    credentials: "include",
+  });
+  if (!response.ok) return;
+  const href = URL.createObjectURL(await response.blob());
+  const anchor = document.createElement("a");
+  anchor.href = href;
+  anchor.download =
+    response.headers
+      .get("content-disposition")
+      ?.match(/filename="([^"]+)"/)?.[1] ?? "openbot-audit-evidence.json";
+  anchor.click();
+  URL.revokeObjectURL(href);
 }
 
 function Row({

@@ -4,10 +4,18 @@ export type ConnectorStatus = {
   name: string;
   roots: string[];
   configured: boolean;
+  status?: "pending" | "running" | "succeeded" | "failed";
+  lastSyncAt?: string | null;
+  nextSyncAt?: string | null;
+  lastError?: string | null;
 };
 
 export type ConnectorAdminService = {
   list: () => Promise<ConnectorStatus[]>;
+  requestSync?: (
+    type: ConnectorStatus["type"],
+    actorUserId: string,
+  ) => Promise<boolean>;
   configureGoogleDrive?: (input: {
     serviceAccountJson: string;
     impersonationSubject: string;
@@ -49,6 +57,7 @@ export function createConnectorAdminService(
   sources: KnowledgeSource[],
   database: Database,
   credentials: CredentialAdminService,
+  audit: AuditStore,
 ): ConnectorAdminService {
   const catalog = createConnectorCatalogService(sources);
   return {
@@ -59,17 +68,34 @@ export function createConnectorAdminService(
      * connector is configured is read from the instances table instead.
      */
     list: async () => {
-      const configured = new Set(
+      const instances = new Map(
         (
           await database
-            .select({ type: connectorInstances.type })
+            .select({
+              type: connectorInstances.type,
+              status: connectorInstances.status,
+              lastSyncAt: connectorInstances.lastSyncAt,
+              nextSyncAt: connectorInstances.nextSyncAt,
+              lastError: connectorInstances.lastError,
+            })
             .from(connectorInstances)
-        ).map((row) => row.type),
+        ).map((row) => [row.type, row]),
       );
-      return (await catalog.list()).map((connector) => ({
-        ...connector,
-        configured: configured.has(connector.type),
-      }));
+      return (await catalog.list()).map((connector) => {
+        const instance = instances.get(connector.type);
+        return {
+          ...connector,
+          configured: Boolean(instance),
+          ...(instance
+            ? {
+                status: instance.status,
+                lastSyncAt: instance.lastSyncAt?.toISOString() ?? null,
+                nextSyncAt: instance.nextSyncAt?.toISOString() ?? null,
+                lastError: instance.lastError,
+              }
+            : {}),
+        };
+      });
     },
     configureGoogleDrive: async (input) => {
       const source = sources.find((item) => item.type === "google-drive");
@@ -97,6 +123,11 @@ export function createConnectorAdminService(
           .set({
             credentialId: credential.id,
             sourceMetadata,
+            status: "pending",
+            nextSyncAt: new Date(),
+            leaseOwner: null,
+            leaseExpiresAt: null,
+            lastError: null,
             updatedAt: new Date(),
           })
           .where(eq(connectorInstances.id, existing.id));
@@ -113,12 +144,39 @@ export function createConnectorAdminService(
         name: "Google Drive",
         roots: source.roots,
         configured: true,
+        status: "pending",
+        lastSyncAt: null,
+        nextSyncAt: new Date().toISOString(),
+        lastError: null,
       };
+    },
+    requestSync: async (type, actorUserId) => {
+      const [queued] = await database
+        .update(connectorInstances)
+        .set({ nextSyncAt: new Date(), updatedAt: new Date() })
+        .where(
+          and(
+            eq(connectorInstances.type, type),
+            ne(connectorInstances.status, "running"),
+          ),
+        )
+        .returning({ id: connectorInstances.id });
+      if (queued) {
+        await recordAuditEvent(audit, {
+          actorUserId,
+          eventType: "connector.sync_requested",
+          targetType: "connector",
+          targetId: queued.id,
+          payload: { type },
+        });
+      }
+      return Boolean(queued);
     },
   };
 }
 
-import { eq } from "drizzle-orm";
+import { and, eq, ne } from "drizzle-orm";
+import { type AuditStore, recordAuditEvent } from "./audit";
 import type { CredentialAdminService } from "./credentials";
 import type { Database } from "./db/client";
 import { connectorInstances } from "./db/schema";

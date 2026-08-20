@@ -3,7 +3,14 @@ import type { ComposerDraft } from "./draft";
 import { type QueuedMessage, reduceQueue } from "./queue";
 
 function draft(text: string, commandIds: string[] = []): ComposerDraft {
-  return { text, agentId: null, commandIds, attachments: [], isEmpty: false };
+  return {
+    text,
+    agentId: null,
+    commandIds,
+    attachments: [],
+    knowledgeRequested: false,
+    isEmpty: false,
+  };
 }
 
 /** Park one message and hand back the queue it produced, which is what every case starts from. */
@@ -62,6 +69,20 @@ describe("submitting", () => {
     expect(result.run?.commandIds).toEqual(["search", "summarize"]);
   });
 
+  test("grounding requested by any queued message survives the drain", () => {
+    const grounded = { ...draft("check the plan"), knowledgeRequested: true };
+    const queue = reduceQueue([], {
+      busy: true,
+      draft: grounded,
+      id: "grounded",
+      type: "submit",
+    }).queue;
+
+    expect(reduceQueue(queue, { type: "settle" }).run?.knowledgeRequested).toBe(
+      true,
+    );
+  });
+
   test("a send while the Bot is working waits instead of running", () => {
     const result = reduceQueue([], {
       busy: true,
@@ -77,6 +98,7 @@ describe("submitting", () => {
         text: "no, the other one",
         commandIds: [],
         attachments: [],
+        knowledgeRequested: false,
       },
     ]);
   });
@@ -202,6 +224,7 @@ describe("removing", () => {
         text: "no, the other one",
         commandIds: [],
         attachments: [],
+        knowledgeRequested: false,
       },
     ]);
   });

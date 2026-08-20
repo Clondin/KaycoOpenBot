@@ -1,0 +1,67 @@
+cases:
+  - id: direct-user-access
+    actor:
+      userId: alice
+      groups: []
+    acls:
+      - principal: user:alice
+        effect: allow
+    expected: true
+  - id: group-access
+    actor:
+      userId: bob
+      groups: [finance]
+    acls:
+      - principal: group:finance
+        effect: allow
+    expected: true
+  - id: email-access
+    actor:
+      userId: alice-id
+      email: Alice@Example.com
+      groups: []
+    acls:
+      - principal: user:alice@example.com
+        effect: allow
+    expected: true
+  - id: domain-access
+    actor:
+      userId: alice
+      email: alice@example.com
+      groups: []
+    acls:
+      - principal: group:domain:example.com
+        effect: allow
+    expected: true
+  - id: public-access
+    actor:
+      userId: guest
+      groups: []
+    acls:
+      - principal: group:*
+        effect: allow
+    expected: true
+  - id: unrelated-group-fails-closed
+    actor:
+      userId: bob
+      groups: [engineering]
+    acls:
+      - principal: group:finance
+        effect: allow
+    expected: false
+  - id: empty-acl-fails-closed
+    actor:
+      userId: alice
+      groups: []
+    acls: []
+    expected: false
+  - id: deny-overrides-allow
+    actor:
+      userId: alice
+      groups: [finance]
+    acls:
+      - principal: group:finance
+        effect: allow
+      - principal: user:alice
+        effect: deny
+    expected: false

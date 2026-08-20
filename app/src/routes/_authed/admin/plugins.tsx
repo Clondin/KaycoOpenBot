@@ -98,6 +98,14 @@ function PluginsPage() {
     onError: (thrown: Error) => setError(thrown.message),
   });
 
+  const startOAuth = async (serverId: string) => {
+    const result = (await post(`/servers/${serverId}/oauth/start`, {})) as {
+      authorizationUrl?: string | null;
+    };
+    if (result.authorizationUrl)
+      window.location.assign(result.authorizationUrl);
+  };
+
   const bots = (agents ?? []).map((agent: { id: string }) => ({
     id: agent.id,
     name: nameFor(agent.id),
@@ -158,6 +166,16 @@ function PluginsPage() {
                   return post("/servers/custom", { ...input, credentialId });
                 })
               }
+              onConnectOAuth={(key, instanceHost) =>
+                mutate.mutate(async () => {
+                  await post("/servers", {
+                    key,
+                    instanceHost,
+                    authMode: "oauth",
+                  });
+                  await startOAuth(key);
+                })
+              }
             />
           ) : tab === "yours" ? (
             <Yours
@@ -175,6 +193,7 @@ function PluginsPage() {
               onRefresh={(id) =>
                 mutate.mutate(() => post(`/servers/${id}/refresh`, {}))
               }
+              onOAuth={(id) => mutate.mutate(() => startOAuth(id))}
               onRemove={(id) =>
                 mutate.mutate(() =>
                   fetch(`/api/plugins/servers/${encodeURIComponent(id)}`, {
@@ -224,6 +243,7 @@ function Catalogue({
   added,
   onAdd,
   onAddCustom,
+  onConnectOAuth,
 }: {
   items: {
     key: string;
@@ -242,6 +262,7 @@ function Catalogue({
     url: string;
     token?: string;
   }) => void;
+  onConnectOAuth: (key: string, instanceHost?: string) => void;
 }) {
   const [instanceHost, setInstanceHost] = useState<Record<string, string>>({});
   const [token, setToken] = useState<Record<string, string>>({});
@@ -271,22 +292,43 @@ function Catalogue({
                 <div className="font-medium">{item.title}</div>
                 <p className="text-sm text-muted-foreground">{item.summary}</p>
               </div>
-              <Button
-                className="shrink-0"
-                disabled={added.has(item.key)}
-                onClick={() =>
-                  onAdd(
-                    item.key,
-                    instanceHost[item.key] || undefined,
-                    token[item.key] || undefined,
-                  )
-                }
-                size="sm"
-                type="button"
-                variant="outline"
-              >
-                {added.has(item.key) ? "Added" : "Add"}
-              </Button>
+              <div className="flex shrink-0 flex-wrap gap-2">
+                {item.needsCredential ? (
+                  <Button
+                    disabled={added.has(item.key)}
+                    onClick={() =>
+                      onConnectOAuth(
+                        item.key,
+                        instanceHost[item.key] || undefined,
+                      )
+                    }
+                    size="sm"
+                    type="button"
+                    variant="default"
+                  >
+                    Connect with OAuth
+                  </Button>
+                ) : null}
+                <Button
+                  disabled={added.has(item.key)}
+                  onClick={() =>
+                    onAdd(
+                      item.key,
+                      instanceHost[item.key] || undefined,
+                      token[item.key] || undefined,
+                    )
+                  }
+                  size="sm"
+                  type="button"
+                  variant="outline"
+                >
+                  {added.has(item.key)
+                    ? "Added"
+                    : item.needsCredential
+                      ? "Add with token"
+                      : "Add"}
+                </Button>
+              </div>
             </div>
             {item.perInstance ? (
               <Input
@@ -441,12 +483,14 @@ function Yours({
   bots,
   onGrant,
   onRefresh,
+  onOAuth,
   onRemove,
 }: {
   servers: PluginServer[];
   bots: { id: string; name: string }[];
   onGrant: (ref: string, agentId: string, held: boolean) => void;
   onRefresh: (id: string) => void;
+  onOAuth: (id: string) => void;
   onRemove: (id: string) => void;
 }) {
   if (servers.length === 0) {
@@ -487,6 +531,11 @@ function Yours({
                     custom
                   </span>
                 ) : null}
+                {server.authMode === "oauth" ? (
+                  <span className="rounded bg-emerald-500/15 px-1.5 py-0.5 text-emerald-700 text-xs dark:text-emerald-400">
+                    OAuth
+                  </span>
+                ) : null}
               </div>
               <div className="font-mono text-muted-foreground text-xs">
                 {server.url}
@@ -498,6 +547,16 @@ function Yours({
               ) : null}
             </div>
             <div className="flex shrink-0 gap-2">
+              {server.authMode === "oauth" ? (
+                <Button
+                  onClick={() => onOAuth(server.id)}
+                  size="sm"
+                  type="button"
+                  variant="outline"
+                >
+                  Reconnect OAuth
+                </Button>
+              ) : null}
               <Button
                 onClick={() => onRefresh(server.id)}
                 size="sm"

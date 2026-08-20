@@ -421,23 +421,39 @@ function render(t: Theme): string {
   lines(
     dbX + 18,
     dbY + 58,
-    ["the audit trail", "policy, grants", "credentials, encrypted"],
+    ["audit + durable tasks", "policy, grants", "knowledge + encrypted keys"],
     t,
     12.5,
     19,
   );
 
-  const intX = 622;
-  box(intX, dbY, 226, 118, t, { stroke: t.ink });
-  text(intX + 18, dbY + 32, "CopilotKit Intelligence", {
+  const workerX = 622;
+  box(workerX, dbY, 226, 118, t, { stroke: t.bring, dashed: true });
+  text(workerX + 18, dbY + 32, "connector worker", {
     size: 14.5,
     weight: 650,
     fill: t.ink,
   });
   lines(
-    intX + 18,
+    workerX + 18,
     dbY + 58,
-    ["durable threads", "memory", "external service"],
+    ["Google Drive sync", "leases + retries", "embeddings + source ACLs"],
+    t,
+    12.5,
+    19,
+  );
+
+  const intX = 872;
+  box(intX, dbY, 180, 118, t, { stroke: t.ink });
+  text(intX + 14, dbY + 32, "CopilotKit Intelligence", {
+    size: 13,
+    weight: 650,
+    fill: t.ink,
+  });
+  lines(
+    intX + 14,
+    dbY + 58,
+    ["durable threads", "external service"],
     t,
     12.5,
     19,
@@ -510,9 +526,16 @@ function render(t: Theme): string {
   });
   label(gX + 72, (svY + svH + dbY) / 2 + 4, "always", t.gate, "end");
 
-  // threads and memory, both ways
-  arrow(intX + 113, svY + svH + 8, intX + 113, dbY - 8, {
+  // durable conversation threads, both ways
+  arrow(svX + svW - 70, svY + svH + 8, intX + 90, dbY - 8, {
     colour: t.ink,
+    dashed: true,
+    tailHead: true,
+  });
+
+  // connector syncs lease work from and persist searchable chunks to PostgreSQL
+  arrow(workerX - 8, dbY + 72, dbX + 226 + 8, dbY + 72, {
+    colour: t.bring,
     dashed: true,
     tailHead: true,
   });
@@ -531,8 +554,9 @@ function render(t: Theme): string {
       `the Bot makes returns through the gateway, which resolves the target, decides it against the ` +
       `configured policy, records an audit row, and only then acts, or refuses and names the rule. ` +
       `Allowed actions reach that Bot's own computer, one container each holding its own Chromium, ` +
-      `logins and workspace, created by the supervisor. Every decision lands in PostgreSQL; threads ` +
-      `and memory live in CopilotKit Intelligence.</desc>`,
+      `logins and workspace, created by the supervisor. Every decision and durable task lands in ` +
+      `PostgreSQL; a leased worker syncs permission-aware knowledge, and conversation threads live ` +
+      `in CopilotKit Intelligence.</desc>`,
     ...out,
     `</svg>`,
   ].join("\n");

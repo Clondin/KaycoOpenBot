@@ -37,6 +37,7 @@ import { join } from "node:path";
 import { type BrowserContext, chromium, type Page } from "playwright";
 import { profileDirectoryFor } from "./bot-id";
 import { egressFor, egressLabel } from "./egress";
+import { installBrowserNetworkGuard } from "./network";
 
 /** The viewport, which is what a person's click coordinates are relative to. */
 export const VIEWPORT = { width: 1280, height: 800 };
@@ -111,6 +112,8 @@ async function closeAndWait(context: BrowserContext): Promise<void> {
 }
 
 export function createProfiles(root: string) {
+  const allowPrivateHosts =
+    process.env.AGENT_COMPUTER_ALLOW_PRIVATE_HOSTS === "true";
   /** One running browser per Bot. */
   const live = new Map<
     string,
@@ -172,8 +175,11 @@ export function createProfiles(root: string) {
           handleSIGTERM: false,
           handleSIGINT: false,
           handleSIGHUP: false,
+          // Service workers can issue requests outside Playwright's routing hooks.
+          serviceWorkers: "block",
           ...(proxy ? { proxy } : {}),
         });
+        await installBrowserNetworkGuard(context, allowPrivateHosts);
         // Persistent contexts open with a page already; reuse it rather than leaving an extra blank tab.
         const page = context.pages()[0] ?? (await context.newPage());
         live.set(botId, { context, page, startedAt: new Date().toISOString() });

@@ -1,4 +1,9 @@
 import { checkNavigationTarget } from "../computer/target";
+import {
+  type AddressResolver,
+  createOutboundFetch,
+  OutboundRequestError,
+} from "../network/outbound";
 
 /**
  * Where an external agent lives, and whether we are willing to talk to it.
@@ -72,8 +77,6 @@ export class EndpointRedirectError extends Error {
   }
 }
 
-const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
-
 /**
  * `fetch`, with the endpoint check applied to every hop rather than only the address a person typed.
  *
@@ -94,40 +97,36 @@ const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
  * following a link.
  */
 export function createAgentFetch(
-  options: { allowPrivateHosts?: boolean; fetchImpl?: typeof fetch } = {},
+  options: {
+    allowPrivateHosts?: boolean;
+    fetchImpl?: typeof fetch;
+    resolver?: AddressResolver;
+  } = {},
 ): (url: string, init?: RequestInit) => Promise<Response> {
-  const doFetch = options.fetchImpl ?? fetch;
+  const guarded = createOutboundFetch({
+    maxRedirects: MAX_REDIRECTS,
+    ...(options.allowPrivateHosts !== undefined
+      ? { allowPrivateHosts: options.allowPrivateHosts }
+      : {}),
+    ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
+    ...(options.resolver
+      ? { resolver: options.resolver }
+      : options.fetchImpl
+        ? {
+            // A supplied fetch is a deterministic unit-test transport and opens no socket.
+            resolver: async () => [{ address: "93.184.216.34", family: 4 }],
+          }
+        : {}),
+  });
 
   return async function guardedFetch(url: string, init?: RequestInit) {
-    let target = url;
-
-    for (let hop = 0; hop <= MAX_REDIRECTS; hop += 1) {
-      // `manual` is what makes this a check rather than a comment: the caller sees the redirect, and
-      // the underlying fetch cannot quietly follow one on its own.
-      const response = await doFetch(target, { ...init, redirect: "manual" });
-      if (!REDIRECT_STATUSES.has(response.status)) return response;
-
-      const location = response.headers.get("location");
-      // A redirect status with nowhere to go is just an answer. Whatever it means, it is the
-      // agent's own reply and not a hop.
-      if (!location) return response;
-
-      const next = new URL(location, target).toString();
-      const verdict = checkAgentEndpoint(next, {
-        ...(options.allowPrivateHosts !== undefined
-          ? { allowPrivateHosts: options.allowPrivateHosts }
-          : {}),
-      });
-      if (!verdict.allowed) {
-        throw new EndpointRedirectError(
-          `That address redirected to ${next}, and ${verdict.reason.charAt(0).toLowerCase()}${verdict.reason.slice(1)}`,
-        );
+    try {
+      return await guarded(url, init);
+    } catch (error) {
+      if (error instanceof OutboundRequestError) {
+        throw new EndpointRedirectError(error.message);
       }
-      target = verdict.url;
+      throw error;
     }
-
-    throw new EndpointRedirectError(
-      `That address redirected more than ${MAX_REDIRECTS} times without arriving anywhere.`,
-    );
   };
 }

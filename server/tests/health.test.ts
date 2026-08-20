@@ -16,6 +16,12 @@ describe("health endpoint", () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ status: "ok" });
   });
+
+  test("exposes a separate readiness probe", async () => {
+    const response = await app.request("http://openbot.local/health/ready");
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ status: "ready" });
+  });
 });
 
 describe("runtime capabilities", () => {

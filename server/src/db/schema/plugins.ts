@@ -62,6 +62,8 @@ export const mcpServers = pgTable("mcp_servers", {
    * second copy of a token here would be a second thing to remember to revoke.
    */
   credentialId: text("credential_id"),
+  /** Static bearer token or an MCP OAuth 2.1 session kept in the credential vault. */
+  authMode: text("auth_mode").notNull().default("token"),
   /** What the deployment last heard back from it. `null` until the first successful listing. */
   toolsRefreshedAt: timestamp("tools_refreshed_at", { withTimezone: true }),
   /** The last failure, kept so the Plugins page can say why a server has no tools. */
