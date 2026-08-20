@@ -106,7 +106,10 @@ describe("Codex AG-UI adapter", () => {
     const turn = client.requests.find(
       (request) => request.method === "turn/start",
     );
-    expect(turn?.params).toMatchObject({ effort: "high" });
+    expect(turn?.params).toMatchObject({
+      effort: "high",
+      summary: "detailed",
+    });
     expect(JSON.stringify(turn?.params)).toContain(
       "Attached text file notes.txt",
     );
