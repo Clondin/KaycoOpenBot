@@ -11,6 +11,7 @@ import {
   toolRunContext,
   type ToolRunContext,
 } from "../plugins/tools";
+import type { CodexPreferences } from "./preferences";
 import {
   CODEX_REQUEST_NOT_HANDLED,
   type CodexAgentClient,
@@ -18,7 +19,6 @@ import {
   CodexRpcError,
 } from "./protocol";
 import type { CodexThreadStore } from "./thread-store";
-import type { CodexPreferences } from "./preferences";
 
 type ThreadResponse = { thread: { id: string } };
 type TurnResponse = { turn: { id: string } };
