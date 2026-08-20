@@ -34,9 +34,9 @@ export function BotThinkingCursor({
       data-testid="bot-thinking"
       role="status"
     >
-      <span className="relative flex size-2" aria-hidden="true">
-        <span className="absolute inline-flex size-full animate-ping rounded-full bg-current opacity-35" />
-        <span className="relative inline-flex size-2 rounded-full bg-current" />
+      {/* The same orb the channel transcript breathes, so waiting looks like one product. */}
+      <span aria-hidden className="thinking-orb-halo">
+        <span className="thinking-orb" />
       </span>
       <span className="tool-line-running">Thinking…</span>
     </div>

@@ -209,13 +209,24 @@ function Thinking() {
 
   return (
     <p
-      className="tool-line-running text-muted-foreground text-sm"
+      className="flex items-center gap-2 text-muted-foreground text-sm"
       // `status` rather than `alert`: this is progress, not something that interrupts what somebody
-      // is doing. The text says it, so a screen reader is told the same thing the shimmer implies.
+      // is doing. The text says it, so a screen reader is told the same thing the orb implies.
       data-testid="transcript-thinking"
       role="status"
     >
-      Thinking{seconds >= 5 ? ` · ${seconds}s` : ""}
+      {/*
+       * The shimmer lives on the TEXT SPAN, not the paragraph: `background-clip: text` makes the
+       * paragraph's own colour transparent, and the orb sitting inside a transparent-text element
+       * is fine (it paints backgrounds, not glyphs) — but keeping them separate means neither
+       * effect has to know the other exists.
+       */}
+      <span aria-hidden className="thinking-orb-halo">
+        <span className="thinking-orb" />
+      </span>
+      <span className="tool-line-running">
+        Thinking{seconds >= 5 ? ` · ${seconds}s` : ""}
+      </span>
     </p>
   );
 }
