@@ -6,7 +6,6 @@ import {
   segmentsToPlainText,
   text,
 } from "prompt-area/helpers";
-import type { ComposerAttachment } from "./attachments";
 
 /**
  * Pure boundary between prompt-area segments and OpenBot's message draft model.
@@ -27,17 +26,10 @@ export type ComposerDraft = {
   agentId: string | null;
   /** Commands that survive into the sent message, in the order they were typed. */
   commandIds: string[];
-  attachments: ComposerAttachment[];
-  /** Ask the runtime to ground this turn in indexed company knowledge. */
-  knowledgeRequested: boolean;
   isEmpty: boolean;
 };
 
-export function toDraft(
-  segments: Segment[],
-  attachments: readonly ComposerAttachment[] = [],
-  knowledgeRequested = false,
-): ComposerDraft {
+export function toDraft(segments: Segment[]): ComposerDraft {
   const agentChips = getChipsByTrigger(segments, AGENT_TRIGGER);
   const commandChips = getChipsByTrigger(segments, COMMAND_TRIGGER);
 
@@ -45,9 +37,7 @@ export function toDraft(
     text: segmentsToPlainText(segments).trim(),
     agentId: agentChips.at(-1)?.value ?? null,
     commandIds: commandChips.map((chip) => chip.value),
-    attachments: [...attachments],
-    knowledgeRequested,
-    isEmpty: isSegmentsEmpty(segments) && attachments.length === 0,
+    isEmpty: isSegmentsEmpty(segments),
   };
 }
 

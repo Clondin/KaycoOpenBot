@@ -1,12 +1,4 @@
-export {
-  Composer,
-  type ComposerInsertion,
-  type ComposerProps,
-} from "./composer";
-export {
-  attachmentInputPart,
-  type ComposerAttachment,
-} from "./attachments";
+export { Composer, type ComposerProps } from "./composer";
 export {
   AGENT_TRIGGER,
   COMMAND_TRIGGER,
