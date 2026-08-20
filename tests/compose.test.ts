@@ -87,3 +87,28 @@ test("runs migrations after PostgreSQL becomes healthy", () => {
   expect(compose).toContain("condition: service_healthy");
   expect(compose).toContain('"drizzle-kit", "migrate"');
 });
+
+test("runs the connector worker in the Hetzner production stack", () => {
+  const compose = readFileSync(
+    join(import.meta.dir, "..", "deploy", "hetzner", "compose.yaml"),
+    "utf8",
+  );
+  const singleUser = readFileSync(
+    join(
+      import.meta.dir,
+      "..",
+      "deploy",
+      "hetzner",
+      "compose.single-user.yaml",
+    ),
+    "utf8",
+  );
+
+  expect(compose).toContain("connector-worker:");
+  expect(compose).toContain("dockerfile: worker/Dockerfile");
+  expect(compose).toContain(
+    "KEY_ENCRYPTION_KEY: ${KEY_ENCRYPTION_KEY:?Set KEY_ENCRYPTION_KEY in env.production}",
+  );
+  expect(compose).toContain("condition: service_completed_successfully");
+  expect(singleUser).toContain("connector-worker:");
+});

@@ -84,6 +84,18 @@ if "${COMPOSE[@]}" ps --status running --quiet 2>/dev/null | grep -q .; then
   else
     fail "Durable task and approval tables are missing."
   fi
+  production_columns="$("${COMPOSE[@]}" exec -T postgres psql -U openbot -d openbot -tAc \
+    "select exists (select 1 from information_schema.columns where table_name = 'task_runs' and column_name = 'max_runtime_ms'), exists (select 1 from information_schema.columns where table_name = 'connector_instances' and column_name = 'next_sync_at'), exists (select 1 from information_schema.columns where table_name = 'mcp_servers' and column_name = 'auth_mode')" 2>/dev/null | tr -d '[:space:]')"
+  if [ "$production_columns" = "t|t|t" ]; then
+    pass "Run executor, connector lease, and plugin OAuth migrations are applied."
+  else
+    fail "One or more production platform migrations are missing."
+  fi
+  if "${COMPOSE[@]}" ps --status running --quiet connector-worker 2>/dev/null | grep -q .; then
+    pass "Connector worker is running."
+  else
+    fail "Connector worker is not running."
+  fi
 else
   warn "The stack is not running; live endpoint and migration checks were skipped."
 fi

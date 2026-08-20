@@ -23,6 +23,10 @@ services:
     mem_limit: 640m
     cpus: 0.5
 
+  connector-worker:
+    mem_limit: 384m
+    cpus: 0.25
+
   server:
     mem_limit: 1g
     cpus: 0.75
