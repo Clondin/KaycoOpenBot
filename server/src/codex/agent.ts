@@ -245,10 +245,12 @@ export class CodexAgent extends AbstractAgent {
         if (method === "item/agentMessage/delta" && !delegatedTool) {
           const delta = typeof event.delta === "string" ? event.delta : "";
           if (!delta || subscriber.closed) return;
-          messageId =
+          const nextMessageId =
             typeof event.itemId === "string"
               ? event.itemId
               : `codex-message-${input.runId}`;
+          if (textOpen && messageId !== nextMessageId) closeText();
+          messageId = nextMessageId;
           if (!textOpen) {
             subscriber.next({
               type: "TEXT_MESSAGE_START",
