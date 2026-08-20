@@ -1,4 +1,8 @@
-import { IconDeviceDesktop, IconSettings } from "@tabler/icons-react";
+import {
+  IconDeviceDesktop,
+  IconSearch,
+  IconSettings,
+} from "@tabler/icons-react";
 import { useQuery } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 import { motion, useReducedMotion } from "motion/react";
@@ -18,6 +22,8 @@ const chatSearchSchema = z.object({
   settings: z.boolean().optional(),
   /** Opens the Bot's screen in the shared detail pane. */
   watch: z.boolean().optional(),
+  /** Opens the in-conversation search bar. */
+  find: z.boolean().optional(),
 });
 
 const EASE_OUT = [0.23, 1, 0.32, 1] as const;
@@ -54,12 +60,36 @@ function ComputerViewPanel({
 
 function RouteComponent() {
   const { channelId } = Route.useParams();
-  const { settings, watch } = Route.useSearch();
+  const { settings, watch, find } = Route.useSearch();
   const channel = useQuery(channelQueryOptions(channelId));
   const navigate = Route.useNavigate();
   const isSettingsOpen = settings === true;
   const prefersReducedMotion = useReducedMotion();
   const isWatching = watch === true;
+  const isSearching = find === true;
+
+  const setSearching = (next: boolean) =>
+    navigate({
+      search: (previous) => ({ ...previous, find: next ? true : undefined }),
+    });
+
+  /**
+   * Ctrl/Cmd+F opens the CONVERSATION's search rather than the browser's, because the browser's
+   * cannot see this transcript the way people expect — matches jump between conversations' worth
+   * of DOM and none of the match-count affordances know what a message is. Pressing it again with
+   * the bar already open falls through to the native find, so the takeover costs one extra press
+   * rather than the feature.
+   */
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!(event.key === "f" && (event.metaKey || event.ctrlKey))) return;
+      if (isSearching) return;
+      event.preventDefault();
+      void setSearching(true);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  });
   /** Channel routing currently supports one coworker. */
   const agentId = channel.data?.agentIds[0];
   /** Needs-you state is rendered by the screen when the screen is already open. */
@@ -159,6 +189,16 @@ function RouteComponent() {
           </div>
           <div className="flex flex-row gap-1.5">
             <Button
+              aria-label="Search this conversation"
+              aria-pressed={isSearching}
+              className={isSearching ? "bg-foreground/5" : undefined}
+              onClick={() => void setSearching(!isSearching)}
+              size="icon"
+              variant="ghost"
+            >
+              <IconSearch className="size-4.5" />
+            </Button>
+            <Button
               aria-label={
                 needsYou
                   ? "This Bot is waiting for you. Open its screen"
@@ -195,6 +235,8 @@ function RouteComponent() {
         channel={channel.data}
         isPending={channel.isPending}
         hasError={Boolean(channel.error)}
+        searchOpen={isSearching}
+        onCloseSearch={() => void setSearching(false)}
       />
     </DetailPanel>
   );
@@ -208,10 +250,14 @@ function ChannelBody({
   channel,
   isPending,
   hasError,
+  searchOpen,
+  onCloseSearch,
 }: {
   channel: AgentChannel | undefined;
   isPending: boolean;
   hasError: boolean;
+  searchOpen: boolean;
+  onCloseSearch: () => void;
 }) {
   if (isPending) {
     return (
@@ -241,7 +287,9 @@ function ChannelBody({
     <ChannelChat
       channel={channel}
       key={channel.id}
+      onCloseSearch={onCloseSearch}
       runtimeAgentId={runtimeAgentId}
+      searchOpen={searchOpen}
     />
   );
 }

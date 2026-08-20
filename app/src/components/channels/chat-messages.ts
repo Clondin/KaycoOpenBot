@@ -20,6 +20,8 @@ export type VisibleChatItem =
   | {
       kind: "tool";
       id: string;
+      /** The assistant message that made the call, which is what arrival times are stamped under. */
+      messageId: string;
       toolCall: ToolCall;
       /** The result, once there is one. Absent means the call is still in flight. */
       result?: string;
@@ -95,6 +97,7 @@ export function toVisibleChatItems(
           kind: "tool",
           // One assistant message can carry multiple tool calls.
           id: toolCall.id,
+          messageId: message.id,
           toolCall,
           ...(results.has(toolCall.id)
             ? { result: results.get(toolCall.id) }

@@ -5,7 +5,7 @@ import { useState } from "react";
 import { ChannelAvatar } from "@/components/channels/avatar";
 import { canSend, type Recipient } from "@/components/channels/compose-state";
 import { ConversationView } from "@/components/channels/conversation-view";
-import { seedMessage } from "@/components/channels/transcript-messages";
+import { firstMessageContent } from "@/components/channels/transcript-messages";
 import {
   Combobox,
   ComboboxContent,
@@ -119,13 +119,24 @@ function RouteComponent() {
         }
         onSubmit={async (draft) => {
           const recipient = recipients[0];
-          if (!recipient || !canSend(recipients, draft.text)) return;
+          const attachments = draft.attachments ?? [];
+          // A message that is only a file is still a first message.
+          if (
+            !recipient ||
+            (!canSend(recipients, draft.text) && attachments.length === 0)
+          ) {
+            return;
+          }
 
           setError(null);
-          setSent(seedMessage(draft.text, crypto.randomUUID()));
+          setSent({
+            content: firstMessageContent({ text: draft.text, attachments }),
+            id: crypto.randomUUID(),
+            role: "user",
+          });
 
           try {
-            await start(recipient.id, draft.text);
+            await start(recipient.id, draft.text, attachments);
           } catch (caught) {
             // Preserve the unsent draft when channel creation fails.
             setSent(null);

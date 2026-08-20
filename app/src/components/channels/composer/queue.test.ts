@@ -72,7 +72,7 @@ describe("submitting", () => {
 
     expect(result.run).toBeNull();
     expect(result.queue).toEqual([
-      { id: "one", text: "no, the other one", commandIds: [] },
+      { id: "one", text: "no, the other one", commandIds: [], attachments: [] },
     ]);
   });
 
@@ -192,7 +192,50 @@ describe("removing", () => {
     const result = reduceQueue(queue, { id: "one", type: "remove" });
 
     expect(result.queue).toEqual([
-      { id: "two", text: "no, the other one", commandIds: [] },
+      { id: "two", text: "no, the other one", commandIds: [], attachments: [] },
     ]);
+  });
+});
+
+describe("attachments", () => {
+  const file = (id: string) => ({
+    id,
+    name: `${id}.png`,
+    mimeType: "image/png",
+    bytes: 3,
+    data: "aaa",
+    kind: "image" as const,
+  });
+
+  test("a parked file rides the queue and lands in the drained turn", () => {
+    const parked = reduceQueue([], {
+      busy: true,
+      draft: { ...draft("look at this"), attachments: [file("a")] },
+      id: "one",
+      type: "submit",
+    });
+
+    const result = reduceQueue(parked.queue, { type: "settle" });
+
+    expect(result.run?.attachments?.map((item) => item.id)).toEqual(["a"]);
+  });
+
+  test("files from separate parked messages arrive together, in order", () => {
+    let queue = reduceQueue([], {
+      busy: true,
+      draft: { ...draft("first"), attachments: [file("a")] },
+      id: "one",
+      type: "submit",
+    }).queue;
+    queue = reduceQueue(queue, {
+      busy: true,
+      draft: { ...draft("second"), attachments: [file("b")] },
+      id: "two",
+      type: "submit",
+    }).queue;
+
+    const result = reduceQueue(queue, { type: "settle" });
+
+    expect(result.run?.attachments?.map((item) => item.id)).toEqual(["a", "b"]);
   });
 });

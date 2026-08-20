@@ -5,15 +5,21 @@ import {
   useCopilotKit,
 } from "@copilotkit/react-core/v2";
 import { useMutation, useQuery } from "@tanstack/react-query";
+import Avatar from "boring-avatars";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { toAgentOptions } from "@/components/channels/composer";
+import {
+  attachmentInputPart,
+  type ComposerAttachment,
+  toAgentOptions,
+} from "@/components/channels/composer";
 import { ConversationView } from "@/components/channels/conversation-view";
 import {
-  seedMessage,
+  firstMessageContent,
   takeFirstMessage,
   transcriptMessages,
 } from "@/components/channels/transcript-messages";
 import { agentListQueryOptions } from "@/lib/agents/queries";
+import { useMessageTimes } from "@/lib/channels/message-times";
 import { recordChannelActivityMutationOptions } from "@/lib/channels/mutations";
 import type { AgentChannel } from "@/lib/channels/queries";
 import { useActiveBot } from "@/lib/copilot/active-bot";
@@ -28,6 +34,42 @@ import { useSkillCommands } from "@/lib/plugins/skill-commands";
 const SEND_WITHOUT_JOIN_AFTER_MS = 1500;
 
 /**
+ * What an empty channel says instead of nothing.
+ *
+ * A blank scroll area reads as something failing to load, and it looks identical to a history that
+ * DID fail to load. This is the third state: really empty, on purpose, with the coworker's own
+ * name and role saying who is listening — the same answer their profile pane would give, in the
+ * place the person is actually looking.
+ */
+function EmptyConversation({
+  agentId,
+  name,
+  title,
+}: {
+  agentId: string;
+  name: string;
+  title?: string | undefined;
+}) {
+  return (
+    <div className="flex flex-col items-center gap-3 py-16 text-center">
+      <span aria-hidden className="size-12 overflow-hidden rounded-full">
+        <Avatar className="size-full" name={agentId} size={48} />
+      </span>
+      <div>
+        <p className="font-medium text-sm">{name}</p>
+        {title ? (
+          <p className="text-muted-foreground text-xs">{title}</p>
+        ) : null}
+      </div>
+      <p className="max-w-sm text-muted-foreground text-sm">
+        Ask anything below. Attach files with the + button, invoke a skill with
+        /, and stop a running answer at any time.
+      </p>
+    </div>
+  );
+}
+
+/**
  * One channel's conversation with one coworker.
  *
  * The local agent id is channel-scoped so two channels with the same coworker keep separate
@@ -36,9 +78,14 @@ const SEND_WITHOUT_JOIN_AFTER_MS = 1500;
 export function ChannelChat({
   channel,
   runtimeAgentId,
+  searchOpen = false,
+  onCloseSearch,
 }: {
   channel: AgentChannel;
   runtimeAgentId: string;
+  /** The `?find` search bar, owned by the route so the flag survives a reload. */
+  searchOpen?: boolean;
+  onCloseSearch?: () => void;
 }) {
   // The core attaches the frontend tool registry; direct agent runs do not.
   const { copilotkit } = useCopilotKit();
@@ -57,15 +104,24 @@ export function ChannelChat({
   /**
    * First-message seed from the compose screen. It is taken once per mount and retained until the
    * agent has its own messages because joining a fresh thread can temporarily empty the agent.
+   *
+   * Two pieces on purpose: `first` keeps the words and files as the send effect needs them, `seed`
+   * is the same thing shaped as a message so the transcript can draw it — attachments included —
+   * before the real send exists.
    */
-  const [seed] = useState<Message | null>(() => {
-    const pending = takeFirstMessage(channel.id);
-    return pending ? seedMessage(pending, crypto.randomUUID()) : null;
-  });
+  const [first] = useState(() => takeFirstMessage(channel.id));
+  const [seed] = useState<Message | null>(() =>
+    first
+      ? {
+          content: firstMessageContent(first),
+          id: crypto.randomUUID(),
+          role: "user",
+        }
+      : null,
+  );
 
   /** Cleared by the send-on-mount effect without restarting it. */
-  const seedRef = useRef(seed);
-  seedRef.current = seed;
+  const firstRef = useRef(first);
 
   /** Promise gate for ordering the first message after the thread join when possible. */
   const openJoinGate = useRef<() => void>(() => {});
@@ -92,6 +148,15 @@ export function ChannelChat({
     if (isReady) openReadyGate.current();
   }, [isReady]);
 
+  /**
+   * The history restore, as a fact the screen can draw: placeholders while it is on its way, a
+   * quiet notice when it could not be read. "failed" exists because an unreadable history rendered
+   * as an empty transcript is a lie with no way to notice it.
+   */
+  const [history, setHistory] = useState<"loading" | "ready" | "failed">(
+    "loading",
+  );
+
   // Join the gateway socket, restore durable history, then release the first-message gate.
   useEffect(() => {
     if (!isReady) return;
@@ -104,12 +169,15 @@ export function ChannelChat({
         // Reported by the run-failure subscriber below; history is still worth restoring.
       }
 
+      let restored: "ready" | "failed" = "ready";
       try {
         const response = await fetch(
           `/api/copilotkit/threads/${encodeURIComponent(channel.threadId)}/messages?agentId=${encodeURIComponent(runtimeAgentId)}`,
           { credentials: "include" },
         );
-        if (response.ok && current) {
+        if (!response.ok) {
+          restored = "failed";
+        } else if (current) {
           const stored = (await response.json())?.messages;
           // Never overwrite local messages that arrived while history was loading.
           if (
@@ -121,10 +189,21 @@ export function ChannelChat({
           }
         }
       } catch {
-        // An unreadable history is not a reason to block the composer.
+        // An unreadable history is not a reason to block the composer; it is a reason to say so.
+        restored = "failed";
       } finally {
         // Release even on join/restore failure; the gate orders messages, not withholds them.
         openJoinGate.current();
+        /*
+         * A TICK LATER ON PURPOSE. Arrival times must see the restored messages while the
+         * conversation still counts as not-live, so a week of history is never stamped with
+         * today; the timeout puts this state change in a later commit than the setMessages above.
+         */
+        if (current) {
+          setTimeout(() => {
+            if (current) setHistory(restored);
+          }, 0);
+        }
       }
     })();
 
@@ -170,6 +249,16 @@ export function ChannelChat({
   const [runsInFlight, setRunsInFlight] = useState(0);
 
   /**
+   * When each message first reached this browser. Live only once history has settled, so restored
+   * messages are never stamped with the day somebody happened to reopen the channel.
+   */
+  const messageTimes = useMessageTimes(
+    channel.threadId,
+    agent.messages.map((message) => message.id),
+    history !== "loading",
+  );
+
+  /**
    * Tell the roster what was just said. Failures here must not block the conversation.
    */
   const recordActivity = useMutation(recordChannelActivityMutationOptions());
@@ -190,7 +279,11 @@ export function ChannelChat({
    * Everything `say` does once it has something worth sending, split out so the counter it is
    * wrapped in covers every way out of here, a throw included.
    */
-  const deliver = async (trimmed: string, skillInstructions: string[]) => {
+  const deliver = async (
+    trimmed: string,
+    skillInstructions: string[],
+    attachments: readonly ComposerAttachment[],
+  ) => {
     // Wait briefly for the runtime agent instance before adding the message.
     if (!isReadyRef.current) {
       await Promise.race([
@@ -225,11 +318,25 @@ export function ChannelChat({
     }
 
     agent.addMessage({
-      content: trimmed,
+      /*
+       * A string when it is only words, parts when files ride along — the projection on the other
+       * side reads both, and a plain string is the shape every agent already expects.
+       */
+      content:
+        attachments.length === 0
+          ? trimmed
+          : [
+              ...(trimmed ? [{ type: "text" as const, text: trimmed }] : []),
+              ...attachments.map(attachmentInputPart),
+            ],
       id: crypto.randomUUID(),
       role: "user",
     });
-    report(trimmed, null);
+    report(
+      trimmed ||
+        `Shared ${attachments.length} file${attachments.length === 1 ? "" : "s"}.`,
+      null,
+    );
 
     // Providers reject later turns if prior tool calls have no result; repair before sending.
     const repaired = repairUnansweredToolCalls(agent.messages);
@@ -253,13 +360,17 @@ export function ChannelChat({
    * keeping here rather than in the view: the view sees only the turns it started itself, and a
    * queue that drains on the wrong one of those posts a correction into the middle of an answer.
    */
-  const say = async (text: string, skillInstructions: string[] = []) => {
+  const say = async (
+    text: string,
+    skillInstructions: string[] = [],
+    attachments: readonly ComposerAttachment[] = [],
+  ) => {
     const trimmed = text.trim();
-    if (!trimmed) return;
+    if (!trimmed && attachments.length === 0) return;
 
     setTurnsInFlight((count) => count + 1);
     try {
-      await deliver(trimmed, skillInstructions);
+      await deliver(trimmed, skillInstructions, attachments);
     } finally {
       setTurnsInFlight((count) => count - 1);
     }
@@ -303,12 +414,58 @@ export function ChannelChat({
   }, []);
 
   /**
+   * Run the newest exchange again, AS ITSELF.
+   *
+   * The transcript is cut back to the last thing the person said and the turn re-runs from there,
+   * so the retry IS a retry rather than a new message. The alternative this replaces sent a
+   * synthetic "please retry" user turn: it showed up in the transcript as something the person had
+   * said, it stayed in the context forever, and each press made the history longer and stranger.
+   *
+   * The discarded answer is genuinely discarded — from this thread's point of view it never
+   * happened, which is exactly what somebody pressing Retry has asked for.
+   */
+  const retryLatest = useCallback(() => {
+    const messages = agent.messages;
+    let lastUser = -1;
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      if (messages[index]?.role === "user") {
+        lastUser = index;
+        break;
+      }
+    }
+    if (lastUser < 0) return;
+
+    agent.setMessages(messages.slice(0, lastUser + 1) as typeof agent.messages);
+
+    void (async () => {
+      setRunError(null);
+      awaitingReply.current = true;
+      setTurnsInFlight((count) => count + 1);
+      setRunsInFlight((count) => count + 1);
+      try {
+        // Truncation ends on a user message, but anything older stays repaired the same way a
+        // normal send would leave it.
+        const repaired = repairUnansweredToolCalls(agent.messages);
+        if (repaired !== agent.messages) {
+          agent.setMessages(repaired as typeof agent.messages);
+        }
+        await copilotkit.runAgent({ agent });
+      } catch {
+        // The run-failure subscriber reports this the same way it reports any turn.
+      } finally {
+        setRunsInFlight((count) => count - 1);
+        setTurnsInFlight((count) => count - 1);
+      }
+    })();
+  }, [agent, copilotkit]);
+
+  /**
    * Send the create-channel seed once, after the join gate opens or the backstop expires.
    */
   useEffect(() => {
-    const pending = seedRef.current;
+    const pending = firstRef.current;
     if (!pending) return;
-    seedRef.current = null;
+    firstRef.current = null;
 
     void (async () => {
       await Promise.race([
@@ -317,18 +474,23 @@ export function ChannelChat({
           setTimeout(resolve, SEND_WITHOUT_JOIN_AFTER_MS),
         ),
       ]);
-      await sayRef.current(
-        typeof pending.content === "string" ? pending.content : "",
-      );
+      await sayRef.current(pending.text, [], pending.attachments);
     })();
 
     // Keep `seed` in state; transcriptMessages hides it as soon as agent messages exist.
   }, [joinGatePromise]);
 
+  const profile = agentProfiles?.find(
+    (candidate) => candidate.id === runtimeAgentId,
+  );
+  const assistantName = profile?.name ?? channel.name;
+
   return (
     <ConversationProvider ask={askFromComponent}>
       <ConversationView
+        agentId={runtimeAgentId}
         agents={toAgentOptions(agentProfiles, channel.agentIds)}
+        assistantName={assistantName}
         // Follow the whole turn, including the pre-run wait and the idle gaps between frontend
         // tool runs. The wire-level flag alone makes the progress line blink out while work remains.
         busy={agent.isRunning || turnsInFlight > 0}
@@ -336,7 +498,21 @@ export function ChannelChat({
         commands={skillCommands}
         // Readiness is handled by `say`; deletion is the only disabled-chat state.
         disabled={!channel.active}
+        draftKey={channel.id}
+        emptyState={
+          <EmptyConversation
+            agentId={runtimeAgentId}
+            name={assistantName}
+            title={profile?.title}
+          />
+        }
+        historyNotice={
+          history === "failed"
+            ? "Earlier messages could not be loaded. New messages still work."
+            : undefined
+        }
         messages={transcriptMessages(agent.messages, seed)}
+        messageTimes={messageTimes}
         notice={
           channel.active ? null : (
             <p className="pb-2 text-sm text-muted-foreground" role="status">
@@ -345,6 +521,8 @@ export function ChannelChat({
             </p>
           )
         }
+        onCloseSearch={onCloseSearch}
+        onRetryLatest={retryLatest}
         onSubmit={async (draft) => {
           // `draft.agentId` carries the @mentioned coworker, but nothing routes on it yet: this
           // channel is pinned to one `runtimeAgentId` for the life of its thread, so honouring a
@@ -363,7 +541,7 @@ export function ChannelChat({
               Boolean(instruction),
             );
 
-          await say(draft.text, skillInstructions);
+          await say(draft.text, skillInstructions, draft.attachments ?? []);
         }}
         /**
          * Stop through the core so the abort signal reaches frontend tools; `say` repairs any
@@ -387,6 +565,8 @@ export function ChannelChat({
          * above.
          */
         queueWhileBusy
+        restoring={history === "loading"}
+        searchOpen={searchOpen}
         /*
          * The run, not the turn. Stop reaches a run through the core's abort controller, and that
          * controller does not exist until `say` has finished waiting for the runtime agent — so
