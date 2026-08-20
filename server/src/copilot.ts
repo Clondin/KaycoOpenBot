@@ -299,6 +299,16 @@ class ContextualBuiltInAgent extends AbstractAgent {
     super({ agentId: agent.id, description: agent.name });
   }
 
+  /** CopilotKit clones every registered agent before attaching request-scoped middleware. */
+  override clone(): this {
+    return Object.assign(super.clone(), {
+      agent: this.agent,
+      model: this.model,
+      apiKey: this.apiKey,
+      loadTools: this.loadTools,
+    }) as this;
+  }
+
   run(input: AgentRunInput) {
     return defer(() =>
       this.loadTools(this.agent.id, toolRunContext(input.forwardedProps)),
@@ -393,6 +403,10 @@ class UnavailableAgent extends AbstractAgent {
   constructor(agent: RegisteredUnavailableAgent) {
     super({ agentId: agent.id, description: agent.name });
     this.reason = agent.reason;
+  }
+
+  override clone(): this {
+    return Object.assign(super.clone(), { reason: this.reason }) as this;
   }
 
   // Refused here rather than at the endpoint: a deleted coworker has no endpoint worth contacting,
