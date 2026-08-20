@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import type { Message } from "@ag-ui/core";
-import { searchableMessageIds, toVisibleChatItems } from "./chat-messages";
+import {
+  searchableMessageIds,
+  shouldShowThinking,
+  toVisibleChatItems,
+} from "./chat-messages";
 
 const messages: Message[] = [
   {
@@ -43,6 +47,54 @@ describe("visible chat messages", () => {
         },
       ],
     });
+  });
+
+  test("shows thinking only when a busy turn has no visible progress", () => {
+    const userOnly = toVisibleChatItems([messages[0]]);
+    const assistantText = toVisibleChatItems(messages);
+    const pendingTool = toVisibleChatItems([
+      messages[0],
+      {
+        id: "assistant-tool",
+        role: "assistant",
+        content: "",
+        toolCalls: [
+          {
+            id: "tool-1",
+            type: "function",
+            function: { name: "browser_open", arguments: "{}" },
+          },
+        ],
+      },
+    ]);
+    const settledTool = toVisibleChatItems([
+      messages[0],
+      {
+        id: "assistant-tool",
+        role: "assistant",
+        content: "",
+        toolCalls: [
+          {
+            id: "tool-1",
+            type: "function",
+            function: { name: "browser_open", arguments: "{}" },
+          },
+        ],
+      },
+      {
+        id: "tool-result",
+        role: "tool",
+        toolCallId: "tool-1",
+        content: "Opened",
+      },
+    ]);
+
+    expect(shouldShowThinking(true, [])).toBe(true);
+    expect(shouldShowThinking(true, userOnly)).toBe(true);
+    expect(shouldShowThinking(true, pendingTool)).toBe(false);
+    expect(shouldShowThinking(true, settledTool)).toBe(true);
+    expect(shouldShowThinking(true, assistantText)).toBe(false);
+    expect(shouldShowThinking(false, userOnly)).toBe(false);
   });
 
   test("finds matching user and assistant messages without case sensitivity", () => {

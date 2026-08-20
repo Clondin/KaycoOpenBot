@@ -1,6 +1,17 @@
-import { CopilotChat } from "@copilotkit/react-core/v2";
+import {
+  CopilotChat,
+  CopilotChatView,
+  type CopilotChatViewProps,
+} from "@copilotkit/react-core/v2";
 import { createFileRoute } from "@tanstack/react-router";
-import type { HTMLAttributes } from "react";
+import {
+  type ComponentProps,
+  createContext,
+  type HTMLAttributes,
+  useCallback,
+  useContext,
+  useState,
+} from "react";
 import { useActiveBot } from "@/lib/copilot/active-bot";
 import { useBotThread } from "@/lib/copilot/bot-thread";
 import { useStoppedTurn } from "@/lib/copilot/stopped-turn";
@@ -31,6 +42,83 @@ export function BotThinkingCursor({
     </div>
   );
 }
+
+type BotScrollViewProps = ComponentProps<typeof CopilotChatView.ScrollView>;
+const BotGapThinkingContext = createContext(false);
+
+function BotScrollView({ children, ...scrollProps }: BotScrollViewProps) {
+  const showGapThinking = useContext(BotGapThinkingContext);
+
+  return (
+    <CopilotChatView.ScrollView {...scrollProps}>
+      {children}
+      {showGapThinking ? (
+        <div className="mx-auto mt-2 w-full max-w-3xl">
+          <BotThinkingCursor />
+        </div>
+      ) : null}
+    </CopilotChatView.ScrollView>
+  );
+}
+
+/**
+ * Keep the packaged chat's run cursor alive across the gaps in a complete user turn.
+ *
+ * CopilotKit's `isRunning` describes one wire run. A browser turn can contain several of those,
+ * with an idle gap after each frontend tool result. The submit promise describes the full turn, so
+ * this view uses it only to fill those gaps; the packaged input still receives the honest run flag
+ * for its Stop button.
+ */
+function BotChatViewComponent({
+  isRunning = false,
+  messageView,
+  onSelectSuggestion,
+  onSubmitMessage,
+  ...props
+}: CopilotChatViewProps) {
+  const [turnsInFlight, setTurnsInFlight] = useState(0);
+
+  const trackTurn = useCallback((start: () => unknown) => {
+    setTurnsInFlight((count) => count + 1);
+
+    const settle = () => setTurnsInFlight((count) => Math.max(0, count - 1));
+    try {
+      const result = start();
+      void Promise.resolve(result).then(settle, settle);
+    } catch (error) {
+      settle();
+      throw error;
+    }
+  }, []);
+
+  return (
+    <BotGapThinkingContext.Provider value={turnsInFlight > 0 && !isRunning}>
+      <CopilotChatView
+        {...props}
+        isRunning={isRunning}
+        messageView={messageView}
+        onSelectSuggestion={
+          onSelectSuggestion
+            ? (suggestion, index) => {
+                trackTurn(() => onSelectSuggestion(suggestion, index));
+              }
+            : undefined
+        }
+        onSubmitMessage={
+          onSubmitMessage
+            ? (value) => {
+                trackTurn(() => onSubmitMessage(value));
+              }
+            : undefined
+        }
+        scrollView={BotScrollView}
+      />
+    </BotGapThinkingContext.Provider>
+  );
+}
+
+// Slot replacements keep the compound component's static building blocks in their public type.
+export const BotChatView = Object.assign(BotChatViewComponent, CopilotChatView);
 
 export const Route = createFileRoute("/_authed/_app/bot")({
   component: RouteComponent,
@@ -86,6 +174,7 @@ function RouteComponent() {
         {threadId ? (
           <CopilotChat
             agentId={agentId}
+            chatView={BotChatView}
             key={agentId}
             messageView={{ cursor: BotThinkingCursor }}
             threadId={threadId}

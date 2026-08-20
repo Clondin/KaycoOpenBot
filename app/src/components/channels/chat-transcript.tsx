@@ -21,7 +21,7 @@ import {
 } from "@/components/ui/message-scroller";
 import { markdownComponents } from "@/lib/markdown";
 import { EASE_OUT, ENTRANCE_SECONDS } from "@/lib/motion";
-import { toVisibleChatItems } from "./chat-messages";
+import { shouldShowThinking, toVisibleChatItems } from "./chat-messages";
 import type { QueuedMessage } from "./composer";
 import { ToolRenderBoundary } from "./tool-boundary";
 import { ToolLine } from "./tool-line";
@@ -92,6 +92,7 @@ function Thinking() {
       className="tool-line-running text-muted-foreground text-sm"
       // `status` rather than `alert`: this is progress, not something that interrupts what somebody
       // is doing. The text says it, so a screen reader is told the same thing the shimmer implies.
+      data-testid="transcript-thinking"
       role="status"
     >
       Thinking
@@ -503,16 +504,11 @@ export function ChatTranscript({
   const items = toVisibleChatItems(messages);
 
   /*
-   * ONLY WHILE THERE IS NOTHING ELSE TO LOOK AT. Once a reply starts streaming, or a tool line
-   * appears, the transcript is already saying the Bot is working — a second indicator under a
-   * half-written answer would claim it had stopped and started again.
-   *
-   * So: the turn is in flight AND the last thing in the conversation is still the person's own
-   * message. A tool call that is running shimmers on its own line and needs nothing from here.
+   * ONLY WHILE THERE IS NOTHING ELSE TO LOOK AT. Streamed text and a running tool already show
+   * progress. Before the first output, and after a tool has returned while the Bot decides what
+   * comes next, this is the only visible evidence that the turn is still alive.
    */
-  const lastItem = items.at(-1);
-  const waitingOnFirstToken =
-    busy && lastItem?.kind === "text" && lastItem.role === "user";
+  const waitingForBot = shouldShowThinking(busy, items);
 
   /*
    * One decider per mounted transcript, so opening a different channel starts the cascade over and
@@ -588,7 +584,7 @@ export function ChatTranscript({
              */}
             {stopped ? (
               <Stopped reason={stopped} />
-            ) : waitingOnFirstToken ? (
+            ) : waitingForBot ? (
               <Thinking />
             ) : null}
             {/*

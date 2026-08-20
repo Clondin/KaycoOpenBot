@@ -329,7 +329,9 @@ export function ChannelChat({
     <ConversationProvider ask={askFromComponent}>
       <ConversationView
         agents={toAgentOptions(agentProfiles, channel.agentIds)}
-        busy={agent.isRunning}
+        // Follow the whole turn, including the pre-run wait and the idle gaps between frontend
+        // tool runs. The wire-level flag alone makes the progress line blink out while work remains.
+        busy={agent.isRunning || turnsInFlight > 0}
         // The `/` menu exposes only skills granted to this Bot.
         commands={skillCommands}
         // Readiness is handled by `say`; deletion is the only disabled-chat state.
