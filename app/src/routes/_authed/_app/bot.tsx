@@ -1,8 +1,36 @@
 import { CopilotChat } from "@copilotkit/react-core/v2";
 import { createFileRoute } from "@tanstack/react-router";
+import type { HTMLAttributes } from "react";
 import { useActiveBot } from "@/lib/copilot/active-bot";
 import { useBotThread } from "@/lib/copilot/bot-thread";
 import { useStoppedTurn } from "@/lib/copilot/stopped-turn";
+
+/** Visible feedback while the packaged chat is waiting for the Bot's first token. */
+export function BotThinkingCursor({
+  className,
+  ...props
+}: HTMLAttributes<HTMLDivElement>) {
+  return (
+    <div
+      {...props}
+      aria-live="polite"
+      className={[
+        "flex items-center gap-2 px-4 py-2 text-sm text-muted-foreground",
+        className,
+      ]
+        .filter(Boolean)
+        .join(" ")}
+      data-testid="bot-thinking"
+      role="status"
+    >
+      <span className="relative flex size-2" aria-hidden="true">
+        <span className="absolute inline-flex size-full animate-ping rounded-full bg-current opacity-35" />
+        <span className="relative inline-flex size-2 rounded-full bg-current" />
+      </span>
+      <span className="tool-line-running">Thinking…</span>
+    </div>
+  );
+}
 
 export const Route = createFileRoute("/_authed/_app/bot")({
   component: RouteComponent,
@@ -56,7 +84,12 @@ function RouteComponent() {
       <div className="min-h-0 flex-1">
         {/* Remount when switching Bots so chat state stays bound to the selected agent. */}
         {threadId ? (
-          <CopilotChat agentId={agentId} key={agentId} threadId={threadId} />
+          <CopilotChat
+            agentId={agentId}
+            key={agentId}
+            messageView={{ cursor: BotThinkingCursor }}
+            threadId={threadId}
+          />
         ) : null}
       </div>
     </div>
