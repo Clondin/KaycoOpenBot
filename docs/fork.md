@@ -20,9 +20,9 @@ project.
 
 The fork currently contains upstream history through:
 
-- Commit: `68cc78d8a30cbb2d44be070870ae45772907d385`
+- Commit: `06a1a8417bce5343854060b8480eef37c0544143`
 - Date: 2026-08-19
-- Subject: `Call them coworkers, everywhere (#11)`
+- Subject: `Take back the two features that only worked on one machine (#21)`
 
 Git ancestry is the source of truth. Update this section only after an upstream
 synchronization pull request has merged into `origin/main`.
@@ -82,6 +82,7 @@ Every synchronization pull request must include:
 
 | Integrated on | Upstream commit | Kayco merge/PR | Notes |
 | --- | --- | --- | --- |
+| 2026-08-19 | `06a1a8417bce5343854060b8480eef37c0544143` | `sync/upstream-2026-08-19` | Imported provider base URLs, queued follow-up turns, reliable Stop behavior, and the stalled-stream watchdog/audit trail. Preserved Kayco's durable approvals, Codex runtime, xAI support, governed runs, and deployment configuration. No database migration. |
 | 2026-08-19 | `68cc78d8a30cbb2d44be070870ae45772907d385` | Initial fork baseline | Product fork established from the current upstream `main`. |
 
 The scheduled `Upstream status` workflow opens or updates a GitHub issue when

@@ -8,6 +8,7 @@ import {
 } from "@copilotkit/runtime/v2";
 import { createCopilotHonoHandler } from "@copilotkit/runtime/v2/hono";
 import type { AgentActor } from "./agents/profile-types";
+import type { StallGuard } from "./channels/stall-guard";
 import type { DeploymentConfig } from "./config";
 import {
   type ModelProvider,
@@ -215,12 +216,14 @@ export function buildAgents(
   agents: RegisteredAgent[],
   model: RuntimeModel,
   apiKey: string | null,
+  /** Absent leaves every stream unwatched, which is what an unconfigured timeout means. */
+  stallGuard?: StallGuard,
   overrides: ReadonlyMap<string, AbstractAgent> = new Map(),
 ): Record<string, AbstractAgent> {
   return Object.fromEntries(
     agents.map((agent) => [
       agent.id,
-      overrides.get(agent.id) ?? buildAgent(agent, model, apiKey),
+      overrides.get(agent.id) ?? buildAgent(agent, model, apiKey, stallGuard),
     ]),
   );
 }
@@ -229,6 +232,7 @@ function buildAgent(
   agent: RegisteredAgent,
   model: RuntimeModel,
   apiKey: string | null,
+  stallGuard?: StallGuard,
 ): AbstractAgent {
   if (agent.type === "built_in") {
     return new BuiltInAgent(builtInAgentConfiguration(agent, model, apiKey));
@@ -236,7 +240,7 @@ function buildAgent(
   if (agent.type === "unavailable") {
     return new UnavailableAgent(agent);
   }
-  return remoteAgentWithStandingRole(agent);
+  return remoteAgentWithStandingRole(agent, stallGuard);
 }
 
 /**
@@ -246,14 +250,24 @@ function buildAgent(
  * so the same coworker works against any endpoint that speaks the protocol. Any copy of the standing
  * message already in the conversation is dropped: the endpoint must receive exactly one, first,
  * however many times the thread has been replayed.
+ *
+ * The stall watch goes on the fetch rather than into that middleware, because the middleware works
+ * in AG-UI events and a stall is the absence of one. The thing that has to be watched is the
+ * response body, and the fetch is where this deployment still holds it.
  */
-function remoteAgentWithStandingRole(agent: RegisteredRemoteAgent) {
+function remoteAgentWithStandingRole(
+  agent: RegisteredRemoteAgent,
+  stallGuard?: StallGuard,
+) {
   const remote = new HttpAgent({
     url: agent.endpoint,
     agentId: agent.id,
     // The customer's own key, if their agent sits behind one. `HttpAgentConfig` is
     // `{ url, headers?, fetch? }`, verified against @ag-ui/client 0.0.57.
     ...(agent.headers ? { headers: agent.headers } : {}),
+    ...(stallGuard
+      ? { fetch: stallGuard.watch({ id: agent.id, name: agent.name }) }
+      : {}),
   });
   remote.use((input, next) =>
     next.run({
@@ -289,6 +303,7 @@ export async function resolveRuntimeAgents(
   model: RuntimeModel,
   resolveModelApiKey: () => Promise<string | null>,
   codex?: { userId: string; provider: CodexAgentProvider },
+  stallGuard?: StallGuard,
 ): Promise<Record<string, AbstractAgent>> {
   const registered = await loadAgents();
   if (registered.length === 0) {
@@ -313,7 +328,7 @@ export async function resolveRuntimeAgents(
   )
     ? await resolveModelApiKey()
     : null;
-  return buildAgents(registered, model, apiKey, overrides);
+  return buildAgents(registered, model, apiKey, stallGuard, overrides);
 }
 
 /** Who is asking. Agent visibility is decided per person, so a run has to know this first. */
@@ -337,6 +352,12 @@ export function createRequestAgents(
   model: RuntimeModel,
   resolveModelApiKey: () => Promise<string | null>,
   codexAgentProvider?: CodexAgentProvider,
+  /**
+   * Shared across every request rather than built per run, because it is the thing that has to
+   * outlive one: the sweep that notices a silent stream has to still be running after the request
+   * that opened it has been answered.
+   */
+  stallGuard?: StallGuard,
 ) {
   return async ({ request }: { request: Request }) => {
     const actor = await identifyActor(request);
@@ -347,6 +368,7 @@ export function createRequestAgents(
       codexAgentProvider
         ? { userId: actor.id, provider: codexAgentProvider }
         : undefined,
+      stallGuard,
     );
   };
 }
@@ -365,7 +387,13 @@ export function mountCopilotRuntime(
   resolveModelApiKey: () => Promise<string | null>,
   identifyUser: IdentifyUser,
   identifyActor: IdentifyActor,
-  codexAgentProvider?: CodexAgentProvider,
+  codexAgentProvider: CodexAgentProvider | undefined,
+  /**
+   * The watch on Bot streams. Not optional, unlike the parameter it forwards to: a guard built from
+   * a timeout of zero already watches nothing, so an unconfigured deployment has one to hand and
+   * there is no reason for a caller to have to say `undefined` here to reach `basePath`.
+   */
+  stallGuard: StallGuard,
   basePath = "/api/copilotkit",
 ) {
   const { intelligence } = config.runtime;
@@ -391,6 +419,7 @@ export function mountCopilotRuntime(
       model,
       resolveModelApiKey,
       codexAgentProvider,
+      stallGuard,
     ) as never,
   });
 
