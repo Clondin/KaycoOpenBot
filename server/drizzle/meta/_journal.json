@@ -71,6 +71,13 @@
       "when": 1787301197651,
       "tag": "0009_famous_power_pack",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1787323440593,
+      "tag": "0010_lonely_kid_colt",
+      "breakpoints": true
     }
   ]
 }

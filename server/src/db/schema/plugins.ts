@@ -136,6 +136,9 @@ export const skills = pgTable(
     instructions: text("instructions").notNull(),
     /** Where it came from: `catalogue` for one we ship, `yours` for one somebody wrote here. */
     origin: text("origin").notNull().default("yours"),
+    /** Archived skills are withheld at runtime; grants remain the capability boundary. */
+    lifecycleStatus: text("lifecycle_status").notNull().default("active"),
+    pinnedVersion: integer("pinned_version"),
     installedBy: text("installed_by"),
     createdAt: createdAt(),
     updatedAt: updatedAt(),

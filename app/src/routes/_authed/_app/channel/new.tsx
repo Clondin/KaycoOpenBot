@@ -3,7 +3,13 @@ import { useQuery } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 import { useState } from "react";
 import { ChannelAvatar } from "@/components/channels/avatar";
-import { canSend, type Recipient } from "@/components/channels/compose-state";
+import {
+  addRecipient,
+  canSend,
+  MAX_RECIPIENTS,
+  removeRecipient,
+  type Recipient,
+} from "@/components/channels/compose-state";
 import { ConversationView } from "@/components/channels/conversation-view";
 import { firstMessageContent } from "@/components/channels/transcript-messages";
 import {
@@ -27,14 +33,17 @@ import { useSkillCommands } from "@/lib/plugins/skill-commands";
  * reloads preserve the pending recipient without creating an empty channel.
  */
 export const Route = createFileRoute("/_authed/_app/channel/new")({
-  validateSearch: (search: Record<string, unknown>): { agent?: string } => ({
+  validateSearch: (
+    search: Record<string, unknown>,
+  ): { agent?: string; agents?: string } => ({
     ...(typeof search.agent === "string" ? { agent: search.agent } : {}),
+    ...(typeof search.agents === "string" ? { agents: search.agents } : {}),
   }),
   component: RouteComponent,
 });
 
 function RouteComponent() {
-  const { agent } = Route.useSearch();
+  const { agent, agents } = Route.useSearch();
   const navigate = Route.useNavigate();
   const { start, pending } = useStartChannel();
   const { data: profiles } = useQuery(agentListQueryOptions());
@@ -55,15 +64,48 @@ function RouteComponent() {
     retry: false,
   });
   const chosen = listed ?? (fetched?.id === agent ? fetched : undefined);
-  const recipients: Recipient[] = chosen
-    ? [{ id: chosen.id, name: chosen.name }]
-    : [];
-  const skillCommands = useSkillCommands(chosen?.id ?? "");
+  const selectedIds = [
+    ...(agent ? [agent] : []),
+    ...(agents?.split(",").filter(Boolean) ?? []),
+  ].filter((id, index, all) => all.indexOf(id) === index);
+  const recipients: Recipient[] = selectedIds
+    .map((id) => {
+      const profile = profiles?.find((candidate) => candidate.id === id);
+      return profile ? { id: profile.id, name: profile.name } : null;
+    })
+    .filter((recipient): recipient is Recipient => Boolean(recipient));
+  if (chosen && !recipients.some((recipient) => recipient.id === chosen.id)) {
+    recipients.unshift({ id: chosen.id, name: chosen.name });
+  }
+  const skillCommands = useSkillCommands(recipients[0]?.id ?? "");
+  const setRecipients = (next: Recipient[]) =>
+    navigate({
+      replace: true,
+      search: next.length
+        ? { agents: next.map((item) => item.id).join(",") }
+        : {},
+    });
 
   return (
     <div className="flex h-full flex-col">
-      <div className="h-12 border-b border-border sticky top-0 flex flex-row px-2 items-center">
-        <span className="text-sm text-muted-foreground">To:</span>
+      <div className="min-h-12 border-b border-border sticky top-0 flex flex-row px-2 items-center">
+        <span className="shrink-0 text-sm text-muted-foreground">To:</span>
+        <div className="flex min-w-0 flex-wrap gap-1.5 px-2">
+          {recipients.map((recipient, index) => (
+            <button
+              aria-label={`Remove ${recipient.name}`}
+              className="rounded-full bg-muted px-2 py-1 text-xs"
+              key={recipient.id}
+              onClick={() =>
+                void setRecipients(removeRecipient(recipients, recipient.id))
+              }
+              type="button"
+            >
+              {index === 0 ? "Active: " : ""}
+              {recipient.name} ×
+            </button>
+          ))}
+        </div>
         <Combobox
           // Do not auto-open when the recipient came from the URL; the field is already answered.
           defaultOpen={!agent}
@@ -75,16 +117,21 @@ function RouteComponent() {
           itemToStringLabel={(item: AgentProfile) => item.name}
           itemToStringValue={(item: AgentProfile) => item.id}
           onValueChange={(next) => {
-            // Recipient changes are not separate navigation history entries.
-            void navigate({
-              replace: true,
-              search: next ? { agent: next.id } : {},
-            });
+            if (!next) return;
+            void setRecipients(
+              addRecipient(recipients, { id: next.id, name: next.name }),
+            );
           }}
-          value={chosen ?? null}
+          value={null}
         >
           <ComboboxInput
-            placeholder="Choose a coworker…"
+            placeholder={
+              recipients.length >= MAX_RECIPIENTS
+                ? "Workroom is full"
+                : recipients.length
+                  ? "Add a coworker…"
+                  : "Choose a coworker…"
+            }
             // InputGroup owns focus rings via `has-[…:focus-visible]`; disable that wrapper ring here.
             className="border-none w-full bg-transparent! text-sm has-[[data-slot=input-group-control]:focus-visible]:ring-0"
           />
@@ -118,11 +165,10 @@ function RouteComponent() {
           ) : null
         }
         onSubmit={async (draft) => {
-          const recipient = recipients[0];
           const attachments = draft.attachments ?? [];
           // A message that is only a file is still a first message.
           if (
-            !recipient ||
+            recipients.length === 0 ||
             (!canSend(recipients, draft.text) && attachments.length === 0)
           ) {
             return;
@@ -136,7 +182,11 @@ function RouteComponent() {
           });
 
           try {
-            await start(recipient.id, draft.text, attachments);
+            await start(
+              recipients.map((recipient) => recipient.id),
+              draft.text,
+              attachments,
+            );
           } catch (caught) {
             // Preserve the unsent draft when channel creation fails.
             setSent(null);

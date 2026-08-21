@@ -39,6 +39,11 @@ export type Routine = {
   mode: "routine" | "monitor";
   quietToken: string;
   delivery: Record<string, unknown>;
+  safeguards: Record<string, unknown>;
+  notepad: string;
+  blueprintId: string | null;
+  preflightStatus: "pending" | "passed" | "failed";
+  preflightMessage: string | null;
   agentId: string;
   channelId: string;
   projectId: string | null;
@@ -63,6 +68,15 @@ export type Delegation = {
   targetChannelId: string;
   taskRunId: string;
   projectId: string | null;
+  parentDelegationId: string | null;
+  depth: number;
+  maxDepth: number;
+  maxChildren: number;
+  maxParallel: number;
+  budgetMinutes: number;
+  steeringStatus: "open" | "stopped";
+  reviewRequired: boolean;
+  reviewedAt: string | null;
   title: string;
   instructions: string;
   expectedOutput: string;

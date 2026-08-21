@@ -1,7 +1,7 @@
-import { and, asc, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import type { AgentProfileStore } from "../agents/profile-store";
 import type { AgentActor } from "../agents/profile-types";
-import type { AuditStore } from "../audit";
+import type { AuditEventType, AuditStore } from "../audit";
 import { recordAuditEvent } from "../audit";
 import type { ChannelStore } from "../channels/routes";
 import type { Database } from "../db/client";
@@ -52,6 +52,12 @@ export type DelegationInput = {
   expectedOutput?: string;
   context?: Record<string, unknown>;
   dueAt?: Date;
+  parentDelegationId?: string;
+  maxDepth?: number;
+  maxChildren?: number;
+  maxParallel?: number;
+  budgetMinutes?: number;
+  reviewRequired?: boolean;
 };
 
 export function createDelegationStore(
@@ -107,6 +113,37 @@ export function createDelegationStore(
     },
 
     async create(actor: AgentActor, input: DelegationInput) {
+      const parent = input.parentDelegationId
+        ? await getOwned(actor, input.parentDelegationId)
+        : null;
+      const depth = parent ? parent.depth + 1 : 0;
+      if (parent && depth > parent.maxDepth) {
+        throw new WorkConflictError(
+          `This handoff reached its maximum depth of ${parent.maxDepth}.`,
+        );
+      }
+      if (parent) {
+        const [counts] = await database
+          .select({
+            total: sql<number>`count(*)::int`,
+            active: sql<number>`count(*) filter (where ${delegations.status} in ('queued', 'accepted', 'in_progress'))::int`,
+          })
+          .from(delegations)
+          .where(eq(delegations.parentDelegationId, parent.id));
+        if (Number(counts?.total ?? 0) >= parent.maxChildren) {
+          throw new WorkConflictError(
+            `This handoff already has its maximum of ${parent.maxChildren} children.`,
+          );
+        }
+        if (Number(counts?.active ?? 0) >= parent.maxParallel) {
+          throw new WorkConflictError(
+            `This handoff already has ${parent.maxParallel} children running in parallel.`,
+          );
+        }
+        if (parent.steeringStatus === "stopped") {
+          throw new WorkConflictError("This handoff tree has been stopped.");
+        }
+      }
       const target = await profiles.get(actor, input.targetAgentId);
       if (!target) throw new WorkNotFoundError("Target coworker not found.");
       if (input.sourceAgentId) {
@@ -141,6 +178,34 @@ export function createDelegationStore(
         throw new WorkValidationError("The due date must be in the future.");
       }
 
+      const maxDepth = parent
+        ? Math.min(
+            parent.maxDepth,
+            boundedInteger(input.maxDepth ?? parent.maxDepth, depth, 8),
+          )
+        : boundedInteger(input.maxDepth ?? 3, depth, 8);
+      const maxChildren = parent
+        ? Math.min(
+            parent.maxChildren,
+            boundedInteger(input.maxChildren ?? parent.maxChildren, 1, 12),
+          )
+        : boundedInteger(input.maxChildren ?? 4, 1, 12);
+      const maxParallel = parent
+        ? Math.min(
+            parent.maxParallel,
+            boundedInteger(input.maxParallel ?? parent.maxParallel, 1, 6),
+          )
+        : boundedInteger(input.maxParallel ?? 2, 1, 6);
+      const budgetMinutes = parent
+        ? Math.min(
+            parent.budgetMinutes,
+            boundedInteger(input.budgetMinutes ?? parent.budgetMinutes, 1, 60),
+          )
+        : boundedInteger(input.budgetMinutes ?? 30, 1, 60);
+      const reviewRequired = parent?.reviewRequired
+        ? true
+        : (input.reviewRequired ?? false);
+
       const targetChannel = await channels.create(actor, [input.targetAgentId]);
       const title = safeLine(input.title, "Delegation title");
       const instruction = safeBody(
@@ -152,6 +217,8 @@ export function createDelegationStore(
         channelId: targetChannel.id,
         agentId: input.targetAgentId,
         title,
+        ...(parent ? { parentRunId: parent.taskRunId } : {}),
+        maxRuntimeMs: budgetMinutes * 60_000,
       });
       const [delegation] = await database
         .insert(delegations)
@@ -167,6 +234,13 @@ export function createDelegationStore(
           targetChannelId: targetChannel.id,
           taskRunId: run.id,
           ...(input.projectId ? { projectId: input.projectId } : {}),
+          ...(parent ? { parentDelegationId: parent.id } : {}),
+          depth,
+          maxDepth,
+          maxChildren,
+          maxParallel,
+          budgetMinutes,
+          reviewRequired,
           title,
           instructions: instruction,
           expectedOutput: input.expectedOutput?.trim()
@@ -212,6 +286,106 @@ export function createDelegationStore(
         status: "queued" as const,
         targetName: target.name,
       };
+    },
+
+    async steer(
+      actor: AgentActor,
+      delegationId: string,
+      input: { instruction?: string; stop?: boolean },
+    ) {
+      const delegation = await getOwned(actor, delegationId);
+      if (input.instruction?.trim()) {
+        const instruction = safeBody(
+          input.instruction,
+          "Steering instruction",
+          20_000,
+        );
+        if (
+          !input.stop &&
+          !["queued", "accepted"].includes(delegation.status)
+        ) {
+          throw new WorkConflictError(
+            "A running handoff cannot be rewritten. Stop it or steer a queued handoff before execution starts.",
+          );
+        }
+        if (!input.stop) {
+          const revised = safeBody(
+            `${delegation.instructions}\n\nSteering update:\n${instruction}`,
+            "Delegation instructions",
+            20_000,
+          );
+          await database
+            .update(delegations)
+            .set({ instructions: revised, updatedAt: new Date() })
+            .where(eq(delegations.id, delegationId));
+        }
+        await database.insert(delegationMessages).values({
+          delegationId,
+          senderUserId: actor.id,
+          kind: "steering",
+          body: instruction,
+        });
+        await auditEvent(audit, actor, "delegation.steered", delegationId, {
+          stopped: input.stop === true,
+        });
+      }
+      if (!input.stop) return getOwned(actor, delegationId);
+
+      const affected = [delegation];
+      let frontier = [delegation.id];
+      while (frontier.length) {
+        const children = await database
+          .select()
+          .from(delegations)
+          .where(inArray(delegations.parentDelegationId, frontier));
+        affected.push(...children);
+        frontier = children.map((child) => child.id);
+      }
+      for (const item of affected) {
+        if (["completed", "failed", "cancelled"].includes(item.status))
+          continue;
+        await database
+          .update(delegations)
+          .set({
+            status: "cancelled",
+            steeringStatus: "stopped",
+            completedAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .where(eq(delegations.id, item.id));
+        await runs
+          .transitionSystem(item.taskRunId, "cancelled")
+          .catch(() => undefined);
+      }
+      await auditEvent(audit, actor, "delegation.tree_stopped", delegationId, {
+        affected: affected.map((item) => item.id),
+      });
+      return getOwned(actor, delegationId);
+    },
+
+    async review(actor: AgentActor, delegationId: string) {
+      const current = await getOwned(actor, delegationId);
+      if (!current.reviewRequired || current.status !== "completed") {
+        throw new WorkConflictError(
+          "Only completed handoffs that require review can be reviewed.",
+        );
+      }
+      const [reviewed] = await database
+        .update(delegations)
+        .set({ reviewedAt: new Date(), updatedAt: new Date() })
+        .where(eq(delegations.id, delegationId))
+        .returning();
+      if (!reviewed) throw new WorkNotFoundError("Delegation not found.");
+      await database.insert(delegationMessages).values({
+        delegationId,
+        senderUserId: actor.id,
+        kind: "review",
+        body: "The result was reviewed and accepted.",
+      });
+      await auditEvent(audit, actor, "delegation.reviewed", delegationId, {
+        accepted: true,
+      });
+      return reviewed;
     },
 
     async transition(
@@ -350,3 +524,24 @@ async function syncTaskRun(
 }
 
 export type DelegationStore = ReturnType<typeof createDelegationStore>;
+
+function boundedInteger(value: number, minimum: number, maximum: number) {
+  return Math.max(minimum, Math.min(Math.trunc(value), maximum));
+}
+
+async function auditEvent(
+  audit: AuditStore | undefined,
+  actor: AgentActor,
+  eventType: AuditEventType,
+  targetId: string,
+  payload: Record<string, unknown>,
+) {
+  if (!audit) return;
+  await recordAuditEvent(audit, {
+    actorUserId: actor.id,
+    eventType,
+    targetType: "delegation",
+    targetId,
+    payload,
+  });
+}

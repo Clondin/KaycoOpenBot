@@ -168,6 +168,13 @@ export const routines = pgTable(
     quietToken: text("quiet_token").notNull().default("NO_ACTION"),
     /** Optional notification/external delivery preferences; never contains a secret. */
     delivery: jsonb("delivery").notNull().default({}),
+    /** Reviewed execution constraints: tool allowlist, pinned model, or deterministic program. */
+    safeguards: jsonb("safeguards").notNull().default({}),
+    /** Small per-routine scratchpad carried between dispatches, never a credential store. */
+    notepad: text("notepad").notNull().default(""),
+    blueprintId: text("blueprint_id"),
+    preflightStatus: text("preflight_status").notNull().default("pending"),
+    preflightMessage: text("preflight_message"),
     status: routineStatus("status").notNull().default("active"),
     trigger: routineTrigger("trigger").notNull().default("manual"),
     /** Reviewed, user-facing recurrence rather than an opaque command-like cron string. */
@@ -235,6 +242,15 @@ export const delegations = pgTable(
     projectId: uuid("project_id").references(() => projects.id, {
       onDelete: "set null",
     }),
+    parentDelegationId: uuid("parent_delegation_id"),
+    depth: integer("depth").notNull().default(0),
+    maxDepth: integer("max_depth").notNull().default(3),
+    maxChildren: integer("max_children").notNull().default(4),
+    maxParallel: integer("max_parallel").notNull().default(2),
+    budgetMinutes: integer("budget_minutes").notNull().default(30),
+    steeringStatus: text("steering_status").notNull().default("open"),
+    reviewRequired: boolean("review_required").notNull().default(false),
+    reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
     title: text("title").notNull(),
     instructions: text("instructions").notNull(),
     context: jsonb("context").notNull().default({}),
@@ -253,6 +269,7 @@ export const delegations = pgTable(
       table.targetAgentId,
       table.status,
     ),
+    index("delegations_parent_idx").on(table.parentDelegationId),
   ],
 );
 

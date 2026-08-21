@@ -45,6 +45,9 @@ export type RoutineInput = {
   trigger: RoutineTrigger;
   schedule?: RoutineSchedule;
   timezone?: string;
+  safeguards?: Record<string, unknown>;
+  notepad?: string;
+  blueprintId?: string;
 };
 
 export type RoutineRecord = Omit<
@@ -215,6 +218,10 @@ export function createRoutineStore(
         input.trigger === "webhook"
           ? crypto.randomUUID() + crypto.randomUUID()
           : null;
+      const preflight = routinePreflight(input.safeguards ?? {});
+      if (!preflight.ok) {
+        throw new WorkValidationError(preflight.message);
+      }
       const [created] = await database
         .insert(routines)
         .values({
@@ -234,6 +241,15 @@ export function createRoutineStore(
           mode: input.mode ?? "routine",
           quietToken: safeLine(input.quietToken ?? "NO_ACTION", "Quiet token"),
           delivery: input.delivery ?? {},
+          safeguards: input.safeguards ?? {},
+          notepad: input.notepad?.trim()
+            ? safeBody(input.notepad, "Routine notepad", 20_000)
+            : "",
+          ...(input.blueprintId?.trim()
+            ? { blueprintId: safeLine(input.blueprintId, "Blueprint", 120) }
+            : {}),
+          preflightStatus: preflight.ok ? "passed" : "failed",
+          preflightMessage: preflight.message,
           status: input.status ?? "active",
           trigger: input.trigger,
           schedule: timing.schedule ?? {},
@@ -275,6 +291,10 @@ export function createRoutineStore(
       const timezone = input.timezone?.trim() || current.timezone;
       const schedule = input.schedule ?? current.schedule;
       const timing = normalizedSchedule(trigger, schedule, timezone);
+      const nextSafeguards =
+        input.safeguards ?? (current.safeguards as Record<string, unknown>);
+      const preflight = routinePreflight(nextSafeguards);
+      if (!preflight.ok) throw new WorkValidationError(preflight.message);
       if (input.channelId || input.agentId) {
         await requireChannelAgent(
           database,
@@ -316,6 +336,25 @@ export function createRoutineStore(
             ? { quietToken: safeLine(input.quietToken, "Quiet token") }
             : {}),
           ...(input.delivery !== undefined ? { delivery: input.delivery } : {}),
+          ...(input.safeguards !== undefined
+            ? { safeguards: input.safeguards }
+            : {}),
+          ...(input.notepad !== undefined
+            ? {
+                notepad: input.notepad.trim()
+                  ? safeBody(input.notepad, "Routine notepad", 20_000)
+                  : "",
+              }
+            : {}),
+          ...(input.blueprintId !== undefined
+            ? {
+                blueprintId: input.blueprintId.trim()
+                  ? safeLine(input.blueprintId, "Blueprint", 120)
+                  : null,
+              }
+            : {}),
+          preflightStatus: "passed",
+          preflightMessage: preflight.message,
           trigger,
           ...(current.trigger === "webhook" && trigger !== "webhook"
             ? { webhookTokenHash: null }
@@ -472,3 +511,67 @@ async function tokenMatches(token: string, expected: string) {
 }
 
 export type RoutineStore = ReturnType<typeof createRoutineStore>;
+
+export function routinePreflight(safeguards: Record<string, unknown>): {
+  ok: boolean;
+  message: string;
+} {
+  if (
+    !safeguards ||
+    typeof safeguards !== "object" ||
+    Array.isArray(safeguards)
+  ) {
+    return { ok: false, message: "Routine safeguards must be an object." };
+  }
+  const maximum = safeguards.maxCostCents;
+  if (maximum !== undefined) {
+    return {
+      ok: false,
+      message:
+        "A dollar ceiling cannot be enforced because connected providers do not report comparable per-run cost. Remove maxCostCents or use a deterministic tool program with no model call.",
+    };
+  }
+  if (safeguards.requireApprovalForWrites !== undefined) {
+    return {
+      ok: false,
+      message:
+        "Write approvals are enforced by OpenBot tool policy, not a routine flag. Remove requireApprovalForWrites and configure the relevant write policy.",
+    };
+  }
+  const allowedTools = safeguards.allowedTools;
+  if (
+    allowedTools !== undefined &&
+    (!Array.isArray(allowedTools) ||
+      allowedTools.length > 100 ||
+      !allowedTools.every((tool) => typeof tool === "string" && tool.trim()))
+  ) {
+    return {
+      ok: false,
+      message: "Routine allowed tools must be a list of at most 100 names.",
+    };
+  }
+  if (safeguards.deterministic === true) {
+    const program = safeguards.toolProgramId;
+    if (typeof program !== "string" || !program.trim()) {
+      return {
+        ok: false,
+        message: "A deterministic routine requires a reviewed tool program.",
+      };
+    }
+  }
+  const pinnedModel = safeguards.model;
+  if (
+    pinnedModel !== undefined &&
+    (!pinnedModel ||
+      typeof pinnedModel !== "object" ||
+      Array.isArray(pinnedModel) ||
+      typeof (pinnedModel as Record<string, unknown>).provider !== "string" ||
+      typeof (pinnedModel as Record<string, unknown>).model !== "string")
+  ) {
+    return {
+      ok: false,
+      message: "Pinned model safeguards require provider and model.",
+    };
+  }
+  return { ok: true, message: "Preflight passed." };
+}

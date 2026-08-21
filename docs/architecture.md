@@ -148,6 +148,33 @@ persona fields, creates fresh private coworkers on the managed endpoint in one
 transaction, and excludes credentials, grants, runtime configuration, and
 conversation data.
 
+### Continuity and Workrooms
+
+`continuity_messages` is a derived, owner-scoped recall index; it is not a
+second transcript store. New user and assistant turns are projected into it so
+the Work surface and the first-party `openbot_context_search` tool can recover
+exact text and message anchors. CopilotKit Intelligence remains canonical.
+Every 50 indexed messages, OpenBot records an extractive, fully anchored
+recovery snapshot. A snapshot is inspectable context hygiene, not permission to
+delete or rewrite the source conversation.
+
+Multi-Bot channels are Workrooms. The shared thread may include up to six Bots,
+but the app always selects one active responder. Its model, tools, and computer
+are the ones used for that turn; changing responders is an explicit UI action.
+
+`agent-computer` stores Time Machine blobs under the reserved
+`.openbot-history` directory. The directory is excluded from listings and
+cannot be read through workspace paths. Before a Bot text write, the computer
+captures the previous file and hashes the post-write file. Rollback refuses if
+that hash no longer matches, unless a person explicitly forces it, and captures
+the pre-rollback state as the next checkpoint.
+
+Reviewed tool programs never execute arbitrary code. They call fixed arguments
+against the same `GrantedTool` executors a normal model call uses, so grant,
+policy, approval, credential, and audit checks remain authoritative per step.
+Deterministic routines may invoke one approved program directly; other routines
+continue through the ordinary durable agent executor.
+
 The `/work` surface is backed by deployment-owned PostgreSQL records:
 
 - `task_runs` and `task_run_events` record durable attempts and lifecycle transitions;

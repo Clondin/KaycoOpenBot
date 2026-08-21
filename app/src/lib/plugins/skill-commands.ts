@@ -13,6 +13,7 @@ export function useSkillCommands(agentId: string): CommandOption[] {
     () =>
       (data?.skills ?? []).map((skill) => ({
         id: skill.slug,
+        sourceId: skill.id,
         name: skill.slug,
         description: skill.summary || skill.title,
         /*

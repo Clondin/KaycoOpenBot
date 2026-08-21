@@ -42,6 +42,8 @@ import type { ComputerGateway } from "./computer/gateway";
 import type { PolicyStore } from "./computer/policy-store";
 import { createComputerRoutes } from "./computer/routes";
 import type { DeploymentConfig } from "./config";
+import { createContinuityRoutes } from "./continuity/routes";
+import type { ContinuityStore } from "./continuity/store";
 import type { ConnectorAdminService } from "./connectors";
 import type { CredentialAdminService, CredentialInput } from "./credentials";
 import { createPluginRoutes } from "./plugins/routes";
@@ -154,6 +156,8 @@ export function createApp(
   healthReader?: HealthReader,
   /** Always-on bridges, reviewed learning, fallback policy, and bounded tool artifacts. */
   autonomyServices?: AutonomyServices,
+  /** Search, recovery points, reviewed tool programs, skill health, and portable Bot bundles. */
+  continuityStore?: ContinuityStore,
 ) {
   const app = new Hono<{ Variables: AppVariables }>();
 
@@ -725,6 +729,13 @@ export function createApp(
     app.route(
       "/api/hooks/channels",
       createExternalChannelIngressRoutes(autonomyServices.channels),
+    );
+  }
+
+  if (continuityStore) {
+    app.route(
+      "/api/continuity",
+      createContinuityRoutes(continuityStore, requireUser),
     );
   }
 

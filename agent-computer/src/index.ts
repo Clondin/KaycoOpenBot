@@ -1150,6 +1150,84 @@ serve<StreamData>({
       }
     }
 
+    if (url.pathname === "/files/checkpoints" && request.method === "POST") {
+      const body = (await request.json().catch(() => null)) as {
+        path?: unknown;
+      } | null;
+      try {
+        return json(
+          await workspace.checkpoints(
+            typeof body?.path === "string" && body.path.trim()
+              ? body.path.trim()
+              : undefined,
+          ),
+        );
+      } catch (error) {
+        return json(
+          { error: describe(error, "Checkpoints could not be listed.") },
+          fileStatus(error),
+        );
+      }
+    }
+
+    if (
+      url.pathname === "/files/checkpoint-diff" &&
+      request.method === "POST"
+    ) {
+      const body = (await request.json().catch(() => null)) as {
+        checkpointId?: unknown;
+        path?: unknown;
+      } | null;
+      try {
+        return json(
+          await workspace.checkpointDiff(
+            String(body?.checkpointId ?? ""),
+            typeof body?.path === "string" ? body.path : undefined,
+          ),
+        );
+      } catch (error) {
+        return json(
+          { error: describe(error, "The checkpoint could not be compared.") },
+          fileStatus(error),
+        );
+      }
+    }
+
+    if (url.pathname === "/files/rollback" && request.method === "POST") {
+      const body = (await request.json().catch(() => null)) as {
+        checkpointId?: unknown;
+        path?: unknown;
+        force?: unknown;
+      } | null;
+      try {
+        const checkpoints = await workspace.checkpoints(
+          typeof body?.path === "string" ? body.path : undefined,
+        );
+        if (
+          typeof body?.path !== "string" ||
+          !checkpoints.checkpoints.some(
+            (checkpoint) =>
+              checkpoint.id === String(body.checkpointId ?? "") &&
+              checkpoint.path === body.path,
+          )
+        ) {
+          throw new WorkspaceFileError(
+            "That checkpoint does not belong to the requested file.",
+          );
+        }
+        return json(
+          await workspace.rollback(String(body?.checkpointId ?? ""), {
+            force: body?.force === true,
+          }),
+        );
+      } catch (error) {
+        return json(
+          { error: describe(error, "The checkpoint could not be restored.") },
+          fileStatus(error),
+        );
+      }
+    }
+
     // The current page as text, without navigating anywhere.
     //
     // Reading must be available after actions too. Returning page text only from `/navigate` would be enough if

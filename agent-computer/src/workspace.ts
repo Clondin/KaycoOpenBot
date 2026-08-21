@@ -21,11 +21,13 @@
  * can be tested against a temporary directory instead of being taken on trust.
  */
 import {
+  copyFile,
   mkdir,
   readdir,
   readFile,
   realpath,
   stat,
+  unlink,
   writeFile,
 } from "node:fs/promises";
 import {
@@ -90,6 +92,20 @@ export const DEFAULT_WORKSPACE_LIMITS: WorkspaceLimits = {
   downloadBytes: 50 * 1024 * 1024,
 };
 
+const HISTORY_DIRECTORY = ".openbot-history";
+const MAX_CHECKPOINT_BYTES = 10 * 1024 * 1024;
+
+export type WorkspaceCheckpoint = {
+  id: string;
+  path: string;
+  operation: "write" | "append" | "rollback";
+  existed: boolean;
+  beforeHash: string | null;
+  afterHash: string;
+  bytesBefore: number;
+  createdAt: string;
+};
+
 export function createWorkspace(
   rootPath: string,
   limits: WorkspaceLimits = DEFAULT_WORKSPACE_LIMITS,
@@ -108,6 +124,12 @@ export function createWorkspace(
       throw new WorkspacePathError("A file path is required.");
     }
     const wanted = requested.trim();
+
+    if (wanted.split(/[\\/]/)[0] === HISTORY_DIRECTORY) {
+      throw new WorkspacePathError(
+        "OpenBot's checkpoint history is not a workspace path.",
+      );
+    }
 
     if (isAbsolute(wanted)) {
       throw new WorkspacePathError(
@@ -186,6 +208,8 @@ export function createWorkspace(
         if (truncated) return;
         const found = await readdir(dir, { withFileTypes: true });
         for (const item of found) {
+          // Checkpoint blobs are implementation data, not Bot files and never enter model context.
+          if (dir === root && item.name === HISTORY_DIRECTORY) continue;
           if (entries.length >= limits.listEntries) {
             truncated = true;
             return;
@@ -248,7 +272,12 @@ export function createWorkspace(
       requested: string,
       contents: string,
       options: { append?: boolean } = {},
-    ): Promise<{ path: string; bytes: number; appended: boolean }> {
+    ): Promise<{
+      path: string;
+      bytes: number;
+      appended: boolean;
+      checkpointId: string;
+    }> {
       if (typeof contents !== "string") {
         throw new WorkspaceFileError("The contents to write must be text.");
       }
@@ -260,12 +289,117 @@ export function createWorkspace(
       }
 
       const full = await resolvePath(requested, true);
+      const checkpoint = await captureCheckpoint(
+        rootPath,
+        full,
+        requested,
+        options.append ? "append" : "write",
+      );
       await mkdir(dirname(full), { recursive: true });
       await writeFile(full, contents, {
         encoding: "utf8",
         flag: options.append ? "a" : "w",
       });
-      return { path: requested, bytes, appended: options.append === true };
+      await finishCheckpoint(rootPath, checkpoint, full);
+      return {
+        path: requested,
+        bytes,
+        appended: options.append === true,
+        checkpointId: checkpoint.id,
+      };
+    },
+
+    /** Recent pre-write checkpoints, newest first. Internal blobs never leave this process. */
+    async checkpoints(requested?: string): Promise<{
+      checkpoints: WorkspaceCheckpoint[];
+    }> {
+      if (requested) await resolvePath(requested, true);
+      const manifests = await readCheckpointManifests(rootPath);
+      return {
+        checkpoints: manifests
+          .filter((checkpoint) => !requested || checkpoint.path === requested)
+          .slice(0, 100),
+      };
+    },
+
+    /** Text comparison for one checkpoint, bounded by the ordinary read limit. */
+    async checkpointDiff(
+      checkpointId: string,
+      expectedPath?: string,
+    ): Promise<{
+      checkpoint: WorkspaceCheckpoint;
+      before: string;
+      current: string;
+      truncated: boolean;
+      changedSinceWrite: boolean;
+    }> {
+      const checkpoint = await readCheckpoint(rootPath, checkpointId);
+      if (expectedPath && checkpoint.path !== expectedPath) {
+        throw new WorkspaceFileError(
+          "That checkpoint does not belong to the requested file.",
+        );
+      }
+      const full = await resolvePath(checkpoint.path, true);
+      const beforeBuffer = checkpoint.existed
+        ? await readFile(checkpointBlob(rootPath, checkpoint.id)).catch(() =>
+            Buffer.alloc(0),
+          )
+        : Buffer.alloc(0);
+      const currentBuffer = await readFile(full).catch(() => Buffer.alloc(0));
+      const currentHash = await fileHash(full);
+      return {
+        checkpoint,
+        before: beforeBuffer.subarray(0, limits.readBytes).toString("utf8"),
+        current: currentBuffer.subarray(0, limits.readBytes).toString("utf8"),
+        truncated:
+          beforeBuffer.byteLength > limits.readBytes ||
+          currentBuffer.byteLength > limits.readBytes,
+        changedSinceWrite: currentHash !== checkpoint.afterHash,
+      };
+    },
+
+    /**
+     * Restore exactly one Bot-written file. A later human edit is preserved unless force is explicit.
+     * The rollback itself gets a checkpoint, so the person can undo the undo.
+     */
+    async rollback(
+      checkpointId: string,
+      options: { force?: boolean } = {},
+    ): Promise<{
+      restored: true;
+      path: string;
+      checkpointId: string;
+      undoCheckpointId: string;
+    }> {
+      const checkpoint = await readCheckpoint(rootPath, checkpointId);
+      const full = await resolvePath(checkpoint.path, true);
+      const currentHash = await fileHash(full);
+      if (!options.force && currentHash !== checkpoint.afterHash) {
+        throw new WorkspaceFileError(
+          "That file changed after the Bot wrote it. Review the diff or explicitly force the rollback to avoid overwriting a person's work.",
+        );
+      }
+      const inverse = await captureCheckpoint(
+        rootPath,
+        full,
+        checkpoint.path,
+        "rollback",
+      );
+      if (checkpoint.existed) {
+        await mkdir(dirname(full), { recursive: true });
+        await copyFile(checkpointBlob(rootPath, checkpoint.id), full);
+      } else {
+        await unlink(full).catch((error) => {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        });
+      }
+      await finishCheckpoint(rootPath, inverse, full);
+      return {
+        restored: true,
+        path: checkpoint.path,
+        checkpointId,
+        undoCheckpointId: inverse.id,
+      };
     },
 
     /** Save a browser download without trusting its suggested path or overwriting an existing file. */
@@ -309,6 +443,110 @@ export function createWorkspace(
 }
 
 export type Workspace = ReturnType<typeof createWorkspace>;
+
+type PendingCheckpoint = Omit<WorkspaceCheckpoint, "afterHash">;
+
+async function captureCheckpoint(
+  rootPath: string,
+  full: string,
+  requested: string,
+  operation: WorkspaceCheckpoint["operation"],
+): Promise<PendingCheckpoint> {
+  const info = await stat(full).catch(() => null);
+  if (info?.isDirectory()) {
+    throw new WorkspaceFileError(`${requested} is a directory, not a file.`);
+  }
+  if (info && info.size > MAX_CHECKPOINT_BYTES) {
+    throw new WorkspaceFileError(
+      `That file is ${info.size} bytes, above the ${MAX_CHECKPOINT_BYTES}-byte checkpoint limit, so OpenBot will not overwrite it without a recovery point.`,
+    );
+  }
+  const id = `${Date.now().toString(36)}-${crypto.randomUUID()}`;
+  const directory = checkpointDirectory(rootPath);
+  await mkdir(directory, { recursive: true });
+  if (info) await copyFile(full, checkpointBlob(rootPath, id));
+  return {
+    id,
+    path: requested,
+    operation,
+    existed: Boolean(info),
+    beforeHash: info ? await fileHash(full) : null,
+    bytesBefore: info?.size ?? 0,
+    createdAt: new Date().toISOString(),
+  };
+}
+
+async function finishCheckpoint(
+  rootPath: string,
+  checkpoint: PendingCheckpoint,
+  full: string,
+) {
+  const complete: WorkspaceCheckpoint = {
+    ...checkpoint,
+    afterHash: await fileHash(full),
+  };
+  await writeFile(
+    checkpointManifest(rootPath, checkpoint.id),
+    JSON.stringify(complete),
+    "utf8",
+  );
+}
+
+async function readCheckpointManifests(rootPath: string) {
+  const directory = checkpointDirectory(rootPath);
+  const files = await readdir(directory).catch(() => []);
+  const checkpoints = await Promise.all(
+    files
+      .filter((file) => file.endsWith(".json"))
+      .map(async (file) => {
+        try {
+          return JSON.parse(
+            await readFile(resolve(directory, file), "utf8"),
+          ) as WorkspaceCheckpoint;
+        } catch {
+          return null;
+        }
+      }),
+  );
+  return checkpoints
+    .filter((value): value is WorkspaceCheckpoint => Boolean(value))
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+}
+
+async function readCheckpoint(rootPath: string, checkpointId: string) {
+  if (!/^[a-z0-9-]{20,100}$/i.test(checkpointId)) {
+    throw new WorkspaceFileError("Checkpoint ID is invalid.");
+  }
+  try {
+    return JSON.parse(
+      await readFile(checkpointManifest(rootPath, checkpointId), "utf8"),
+    ) as WorkspaceCheckpoint;
+  } catch {
+    throw new WorkspaceFileError("That checkpoint does not exist.");
+  }
+}
+
+async function fileHash(full: string) {
+  const contents = await readFile(full).catch((error) => {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  });
+  if (contents === null) return "missing";
+  const digest = await crypto.subtle.digest("SHA-256", contents);
+  return Buffer.from(digest).toString("hex");
+}
+
+function checkpointDirectory(rootPath: string) {
+  return resolve(rootPath, HISTORY_DIRECTORY, "checkpoints");
+}
+
+function checkpointManifest(rootPath: string, id: string) {
+  return resolve(checkpointDirectory(rootPath), `${id}.json`);
+}
+
+function checkpointBlob(rootPath: string, id: string) {
+  return resolve(checkpointDirectory(rootPath), `${id}.before`);
+}
 
 /** Containment, as a path comparison that cannot be fooled by a shared prefix. */
 function assertInside(root: string, candidate: string, shown?: string): void {

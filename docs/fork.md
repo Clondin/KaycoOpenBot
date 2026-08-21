@@ -56,6 +56,12 @@ These are durable product directions, not a complete change log:
   discovery, and bounded tool-result artifacts are Kayco product behavior. See
   [the OpenClaw capability harvest](openclaw-harvest.md) for provenance and
   intentionally preserved boundaries.
+- **Continuity and bounded orchestration:** Context Vault, anchored recovery
+  snapshots, workspace Time Machine, reviewed tool programs, multi-Bot
+  Workrooms, nested bounded handoffs, routine safeguards, skill health, and
+  secret-free Bot bundles are Kayco product behavior. See
+  [the Hermes capability harvest](hermes-harvest.md) for provenance and the
+  runtime boundaries intentionally not imported.
 
 When upstream changes overlap one of these areas, preserve the Kayco product
 contract while incorporating compatible fixes and improvements. If a product

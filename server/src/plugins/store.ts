@@ -18,6 +18,7 @@ import {
   mcpTools,
   pluginGrants,
   skills,
+  skillVersions,
 } from "../db/schema";
 import {
   type CatalogueEntry,
@@ -105,6 +106,7 @@ export type GrantedPlugins = {
     inputSchema: Record<string, unknown>;
   }[];
   skills: {
+    id: string;
     slug: string;
     title: string;
     summary: string;
@@ -798,14 +800,47 @@ export function createPluginStore(options: PluginStoreOptions) {
               .from(skills)
               .where(inArray(skills.slug, skillSlugs));
 
+      const pinnedRows = skillRows.filter(
+        (row) => row.lifecycleStatus === "active" && row.pinnedVersion,
+      );
+      const pinnedVersions =
+        pinnedRows.length === 0
+          ? []
+          : await database
+              .select()
+              .from(skillVersions)
+              .where(
+                inArray(
+                  skillVersions.skillId,
+                  pinnedRows.map((row) => row.id),
+                ),
+              );
+      const pinnedBySkillAndVersion = new Map(
+        pinnedVersions.map((version) => [
+          `${version.skillId}:${version.version}`,
+          version,
+        ]),
+      );
+
       return {
         tools: grantedTools,
-        skills: skillRows.map((row) => ({
-          slug: row.slug,
-          title: row.title,
-          summary: row.summary,
-          instructions: row.instructions,
-        })),
+        skills: skillRows.flatMap((row) => {
+          if (row.lifecycleStatus !== "active") return [];
+          const pinned = row.pinnedVersion
+            ? pinnedBySkillAndVersion.get(`${row.id}:${row.pinnedVersion}`)
+            : null;
+          // A broken pin fails closed instead of silently switching the Bot to unreviewed content.
+          if (row.pinnedVersion && !pinned) return [];
+          return [
+            {
+              id: row.id,
+              slug: row.slug,
+              title: pinned?.title ?? row.title,
+              summary: pinned?.summary ?? row.summary,
+              instructions: pinned?.instructions ?? row.instructions,
+            },
+          ];
+        }),
       };
     },
 

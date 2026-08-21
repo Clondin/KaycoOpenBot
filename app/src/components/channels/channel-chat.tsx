@@ -20,7 +20,10 @@ import {
 } from "@/components/channels/transcript-messages";
 import { agentListQueryOptions } from "@/lib/agents/queries";
 import { useMessageTimes } from "@/lib/channels/message-times";
-import { recordChannelActivityMutationOptions } from "@/lib/channels/mutations";
+import {
+  indexContinuityMessageMutationOptions,
+  recordChannelActivityMutationOptions,
+} from "@/lib/channels/mutations";
 import type { AgentChannel } from "@/lib/channels/queries";
 import { useActiveBot } from "@/lib/copilot/active-bot";
 import {
@@ -31,6 +34,7 @@ import {
 import { ConversationProvider } from "@/lib/copilot/conversation";
 import { repairUnansweredToolCalls } from "@/lib/copilot/repair-history";
 import { stoppedReason } from "@/lib/copilot/stopped-turn";
+import { resolveContextReferences } from "@/lib/continuity/context-references";
 import { useSkillCommands } from "@/lib/plugins/skill-commands";
 
 /**
@@ -267,14 +271,30 @@ export function ChannelChat({
    * Tell the roster what was just said. Failures here must not block the conversation.
    */
   const recordActivity = useMutation(recordChannelActivityMutationOptions());
-  const report = (text: string, agentId: string | null) => {
+  const indexMessage = useMutation(indexContinuityMessageMutationOptions());
+  const report = (
+    text: string,
+    agentId: string | null,
+    messageId: string,
+    role: "user" | "assistant",
+  ) => {
     const trimmed = text.trim();
     if (!trimmed) return;
+    const occurredAt = new Date().toISOString();
     recordActivity.mutate({
       agentId,
-      at: new Date().toISOString(),
+      at: occurredAt,
       channelId: channel.id,
       text: trimmed,
+    });
+    indexMessage.mutate({
+      channelId: channel.id,
+      threadId: channel.threadId,
+      messageId,
+      agentId,
+      role,
+      content: trimmed,
+      occurredAt,
     });
   };
   const reportRef = useRef(report);
@@ -288,6 +308,7 @@ export function ChannelChat({
     trimmed: string,
     skillInstructions: string[],
     attachments: readonly ComposerAttachment[],
+    skillIds: readonly string[] = [],
   ) => {
     // Wait briefly for the runtime agent instance before adding the message.
     if (!isReadyRef.current) {
@@ -301,6 +322,18 @@ export function ChannelChat({
 
     setRunError(null);
     awaitingReply.current = true;
+
+    const resolvedContext = await resolveContextReferences(
+      trimmed,
+      runtimeAgentId,
+    );
+    if (resolvedContext.context) {
+      agent.addMessage({
+        content: resolvedContext.context,
+        id: crypto.randomUUID(),
+        role: "system",
+      });
+    }
 
     /*
      * THE SKILL GOES IN FRONT OF THE MESSAGE, AS A SYSTEM TURN. A `/` chip is one token in the
@@ -322,6 +355,7 @@ export function ChannelChat({
       });
     }
 
+    const userMessageId = crypto.randomUUID();
     agent.addMessage({
       /*
        * A string when it is only words, parts when files ride along — the projection on the other
@@ -334,14 +368,31 @@ export function ChannelChat({
               ...(trimmed ? [{ type: "text" as const, text: trimmed }] : []),
               ...attachments.map(attachmentInputPart),
             ],
-      id: crypto.randomUUID(),
+      id: userMessageId,
       role: "user",
     });
     report(
       trimmed ||
         `Shared ${attachments.length} file${attachments.length === 1 ? "" : "s"}.`,
       null,
+      userMessageId,
+      "user",
     );
+    for (const skillId of skillIds) {
+      void fetch(
+        `/api/continuity/skills/${encodeURIComponent(skillId)}/usage`,
+        {
+          method: "POST",
+          credentials: "include",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            agentId: runtimeAgentId,
+            channelId: channel.id,
+            outcome: "invoked",
+          }),
+        },
+      ).catch(() => undefined);
+    }
 
     // Providers reject later turns if prior tool calls have no result; repair before sending.
     const repaired = repairUnansweredToolCalls(agent.messages);
@@ -375,13 +426,14 @@ export function ChannelChat({
     text: string,
     skillInstructions: string[] = [],
     attachments: readonly ComposerAttachment[] = [],
+    skillIds: readonly string[] = [],
   ) => {
     const trimmed = text.trim();
     if (!trimmed && attachments.length === 0) return;
 
     setTurnsInFlight((count) => count + 1);
     try {
-      await deliver(trimmed, skillInstructions, attachments);
+      await deliver(trimmed, skillInstructions, attachments, skillIds);
     } finally {
       setTurnsInFlight((count) => count - 1);
     }
@@ -407,7 +459,9 @@ export function ChannelChat({
           .reverse()
           .find((message) => message.role === "assistant");
         const content = typeof reply?.content === "string" ? reply.content : "";
-        if (content) reportRef.current(content, runtimeAgentId);
+        if (content && reply?.id) {
+          reportRef.current(content, runtimeAgentId, reply.id, "assistant");
+        }
       },
     });
     return () => subscription?.unsubscribe();
@@ -569,7 +623,19 @@ export function ChannelChat({
               Boolean(instruction),
             );
 
-          await say(draft.text, skillInstructions, draft.attachments ?? []);
+          const skillIds = draft.commandIds
+            .map(
+              (id) =>
+                skillCommands.find((command) => command.id === id)?.sourceId,
+            )
+            .filter((id): id is string => Boolean(id));
+
+          await say(
+            draft.text,
+            skillInstructions,
+            draft.attachments ?? [],
+            skillIds,
+          );
         }}
         /**
          * Stop through the core so the abort signal reaches frontend tools; `say` repairs any

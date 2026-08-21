@@ -87,6 +87,8 @@ export type CommandKind = "chip" | "prompt" | "action";
 
 export type CommandOption = {
   id: string;
+  /** Stable source record for usage/provenance ledgers; not rendered into the draft. */
+  sourceId?: string;
   name: string;
   description?: string;
   /** Defaults to `chip`. */
