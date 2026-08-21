@@ -6,6 +6,7 @@ import {
   IconCheck,
   IconClock,
   IconGitBranch,
+  IconHistory,
   IconPlayerPause,
   IconPlayerPlay,
   IconPlug,
@@ -17,6 +18,7 @@ import { useEffect, useRef, useState } from "react";
 import { z } from "zod";
 import { PageShell } from "@/components/layout/page-shell";
 import { AutonomyView } from "@/components/work/autonomy-view";
+import { ContinuityView } from "@/components/work/continuity-view";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -54,6 +56,7 @@ const viewSchema = z.object({
       "queue",
       "routines",
       "autonomy",
+      "continuity",
       "projects",
       "integrations",
       "memory",
@@ -129,6 +132,7 @@ function WorkPage() {
               ["queue", "Queue", IconBriefcase],
               ["routines", "Routines", IconClock],
               ["autonomy", "Autonomy", IconBolt],
+              ["continuity", "Continuity", IconHistory],
               ["projects", "Projects", IconGitBranch],
               ["integrations", "Integrations", IconPlug],
               ["memory", "Memory", IconBrain],
@@ -177,6 +181,11 @@ function WorkPage() {
             channels={channels.data ?? []}
             routines={data.routines}
             runs={data.runs}
+          />
+        ) : current === "continuity" ? (
+          <ContinuityView
+            agents={agents.data ?? []}
+            channels={channels.data ?? []}
           />
         ) : current === "projects" ? (
           <ProjectsView
@@ -260,6 +269,7 @@ function QueueView({
             <CreateDelegationDialog
               action={action}
               agents={agents}
+              delegations={data.delegations}
               projects={data.projects}
             />
           }
@@ -336,8 +346,8 @@ function QueueView({
         />
         <div className="mt-4 grid gap-3 md:grid-cols-2">
           {data.delegations.length ? (
-            data.delegations
-              .slice(0, 12)
+            delegationTree(data.delegations)
+              .slice(0, 20)
               .map((delegation) => (
                 <DelegationCard
                   action={action}
@@ -406,6 +416,7 @@ function DelegationCard({
   action: WorkAction;
   delegation: Delegation;
 }) {
+  const [steeringInstruction, setSteeringInstruction] = useState("");
   const terminal = ["completed", "failed", "cancelled"].includes(
     delegation.status,
   );
@@ -435,6 +446,40 @@ function DelegationCard({
       <p className="mt-3 line-clamp-3 text-sm text-muted-foreground">
         {delegation.instructions}
       </p>
+      <p className="mt-2 text-xs text-muted-foreground">
+        Depth {delegation.depth}/{delegation.maxDepth} ·{" "}
+        {delegation.budgetMinutes} minute budget · up to{" "}
+        {delegation.maxParallel} parallel children
+      </p>
+      {["queued", "accepted"].includes(delegation.status) ? (
+        <div className="mt-3 flex gap-2">
+          <Input
+            aria-label={`Steer ${delegation.title}`}
+            onChange={(event) => setSteeringInstruction(event.target.value)}
+            placeholder="Refine this handoff before it starts…"
+            value={steeringInstruction}
+          />
+          <Button
+            disabled={action.isPending || !steeringInstruction.trim()}
+            onClick={() =>
+              action.mutate(
+                () =>
+                  workRequest(`/delegations/${delegation.id}/steer`, {
+                    method: "POST",
+                    body: JSON.stringify({
+                      instruction: steeringInstruction,
+                    }),
+                  }),
+                { onSuccess: () => setSteeringInstruction("") },
+              )
+            }
+            size="sm"
+            variant="outline"
+          >
+            Steer
+          </Button>
+        </div>
+      ) : null}
       {!terminal ? (
         <div className="mt-3 flex gap-2">
           {delegation.status === "queued" ? (
@@ -467,7 +512,39 @@ function DelegationCard({
           >
             Cancel
           </Button>
+          <Button
+            onClick={() =>
+              action.mutate(() =>
+                workRequest(`/delegations/${delegation.id}/steer`, {
+                  method: "POST",
+                  body: JSON.stringify({ stop: true }),
+                }),
+              )
+            }
+            size="sm"
+            variant="ghost"
+          >
+            Stop tree
+          </Button>
         </div>
+      ) : null}
+      {delegation.status === "completed" &&
+      delegation.reviewRequired &&
+      !delegation.reviewedAt ? (
+        <Button
+          className="mt-3"
+          onClick={() =>
+            action.mutate(() =>
+              workRequest(`/delegations/${delegation.id}/review`, {
+                method: "POST",
+              }),
+            )
+          }
+          size="sm"
+          variant="outline"
+        >
+          <IconCheck /> Accept result
+        </Button>
       ) : null}
     </div>
   );
@@ -1070,6 +1147,8 @@ function CreateRoutineDialog({
   );
   const [time, setTime] = useState("08:00");
   const [webhook, setWebhook] = useState<string | null>(null);
+  const [notepad, setNotepad] = useState("");
+  const [safeguards, setSafeguards] = useState("{}");
 
   useEffect(() => {
     if (!agentId && agents[0]) setAgentId(agents[0].id);
@@ -1107,6 +1186,8 @@ function CreateRoutineDialog({
         ...(trigger === "schedule"
           ? { schedule: { kind: "daily", time } }
           : {}),
+        notepad,
+        safeguards: JSON.parse(safeguards),
       }),
     });
     if (response.webhookToken) {
@@ -1202,6 +1283,28 @@ function CreateRoutineDialog({
                     ))}
                 </NativeSelect>
               </Field>
+              <Field label="Routine notepad">
+                <Textarea
+                  className="min-h-24"
+                  onChange={(event) => setNotepad(event.target.value)}
+                  placeholder="Durable context carried only by this routine. Never put secrets here."
+                  value={notepad}
+                />
+              </Field>
+              <Field label="Safeguards (JSON)">
+                <Textarea
+                  className="min-h-36 font-mono text-xs"
+                  onChange={(event) => setSafeguards(event.target.value)}
+                  placeholder={
+                    '{\n  "allowedTools": ["tool_name"],\n  "model": { "provider": "openai", "model": "model-name" },\n  "deterministic": true,\n  "toolProgramId": "approved-program-id"\n}'
+                  }
+                  value={safeguards}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Optional keys: allowedTools, model, or deterministic plus an
+                  approved toolProgramId. Write approvals remain in tool policy.
+                </p>
+              </Field>
             </>
           )}
         </DialogBody>
@@ -1239,10 +1342,12 @@ function CreateRoutineDialog({
 function CreateDelegationDialog({
   action,
   agents,
+  delegations,
   projects,
 }: {
   action: WorkAction;
   agents: AgentProfile[];
+  delegations: Delegation[];
   projects: Project[];
 }) {
   const [open, setOpen] = useState(false);
@@ -1251,6 +1356,12 @@ function CreateDelegationDialog({
   const [title, setTitle] = useState("");
   const [instructions, setInstructions] = useState("");
   const [expectedOutput, setExpectedOutput] = useState("");
+  const [parentDelegationId, setParentDelegationId] = useState("");
+  const [budgetMinutes, setBudgetMinutes] = useState("30");
+  const [maxDepth, setMaxDepth] = useState("3");
+  const [maxChildren, setMaxChildren] = useState("4");
+  const [maxParallel, setMaxParallel] = useState("2");
+  const [reviewRequired, setReviewRequired] = useState(false);
   useEffect(() => {
     if (!targetAgentId && agents[0]) setTargetAgentId(agents[0].id);
   }, [targetAgentId, agents]);
@@ -1307,6 +1418,70 @@ function CreateDelegationDialog({
                 ))}
             </NativeSelect>
           </Field>
+          <Field label="Parent handoff (optional)">
+            <NativeSelect
+              onChange={setParentDelegationId}
+              value={parentDelegationId}
+            >
+              <option value="">Top-level handoff</option>
+              {delegations
+                .filter(
+                  (delegation) =>
+                    !["failed", "cancelled"].includes(delegation.status),
+                )
+                .map((delegation) => (
+                  <option key={delegation.id} value={delegation.id}>
+                    {"—".repeat(delegation.depth)} {delegation.title}
+                  </option>
+                ))}
+            </NativeSelect>
+          </Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Budget (minutes)">
+              <Input
+                min={1}
+                max={60}
+                onChange={(event) => setBudgetMinutes(event.target.value)}
+                type="number"
+                value={budgetMinutes}
+              />
+            </Field>
+            <Field label="Max depth">
+              <Input
+                min={0}
+                max={8}
+                onChange={(event) => setMaxDepth(event.target.value)}
+                type="number"
+                value={maxDepth}
+              />
+            </Field>
+            <Field label="Max children">
+              <Input
+                min={1}
+                max={12}
+                onChange={(event) => setMaxChildren(event.target.value)}
+                type="number"
+                value={maxChildren}
+              />
+            </Field>
+            <Field label="Max parallel">
+              <Input
+                min={1}
+                max={6}
+                onChange={(event) => setMaxParallel(event.target.value)}
+                type="number"
+                value={maxParallel}
+              />
+            </Field>
+          </div>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              checked={reviewRequired}
+              onChange={(event) => setReviewRequired(event.target.checked)}
+              type="checkbox"
+            />
+            Require me to review the completed result
+          </label>
         </DialogBody>
         <DialogFooter>
           <Button
@@ -1327,6 +1502,12 @@ function CreateDelegationDialog({
                       instructions,
                       expectedOutput,
                       ...(projectId ? { projectId } : {}),
+                      ...(parentDelegationId ? { parentDelegationId } : {}),
+                      budgetMinutes: Number(budgetMinutes),
+                      maxDepth: Number(maxDepth),
+                      maxChildren: Number(maxChildren),
+                      maxParallel: Number(maxParallel),
+                      reviewRequired,
                     }),
                   }),
                 { onSuccess: () => setOpen(false) },
@@ -1612,6 +1793,29 @@ function EmptyLine({ children }: { children: React.ReactNode }) {
       {children}
     </p>
   );
+}
+
+function delegationTree(items: Delegation[]) {
+  const children = new Map<string | null, Delegation[]>();
+  for (const item of items) {
+    const group = children.get(item.parentDelegationId) ?? [];
+    group.push(item);
+    children.set(item.parentDelegationId, group);
+  }
+  const ordered: Delegation[] = [];
+  const visit = (parentId: string | null) => {
+    for (const item of children.get(parentId) ?? []) {
+      ordered.push(item);
+      visit(item.id);
+    }
+  };
+  visit(null);
+  // A partially imported tree can reference a missing parent. Keep those handoffs visible.
+  for (const item of items) {
+    if (!ordered.some((candidate) => candidate.id === item.id))
+      ordered.push(item);
+  }
+  return ordered;
 }
 
 function StatusPill({ status }: { status: string }) {

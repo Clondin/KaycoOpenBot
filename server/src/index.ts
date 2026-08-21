@@ -47,6 +47,11 @@ import { createSupervisorClient } from "./computer/supervisor";
 import { loadConfig } from "./config";
 import { createConnectorAdminService } from "./connectors";
 import {
+  continuityTools,
+  createContinuityStore,
+  governedProgramTools,
+} from "./continuity/store";
+import {
   type IdentifyActor,
   type IdentifyUser,
   type CodexAgentProvider,
@@ -347,6 +352,7 @@ const learningStore = createLearningStore({
   memory: memoryStore,
   audit: bootAuditStore,
 });
+const continuityStore = createContinuityStore(database, bootAuditStore);
 const autonomyServices = {
   channels: externalChannelStore,
   learning: learningStore,
@@ -483,20 +489,36 @@ const deploymentToolsFor = async (
   actor: AgentActor,
   botId: string,
   run?: Parameters<typeof grantedTools>[0]["run"],
+  allowedToolNames?: ReadonlySet<string>,
 ) => {
+  const granted = await grantedTools({
+    store: pluginStore,
+    botId,
+    actorId: actor.id,
+    actorRole: actor.role,
+    approvals: approvalService,
+    ...(run ? { run } : {}),
+  });
   const tools = [
-    ...(await grantedTools({
-      store: pluginStore,
-      botId,
-      actorId: actor.id,
-      actorRole: actor.role,
-      approvals: approvalService,
-      ...(run ? { run } : {}),
-    })),
+    ...granted,
     knowledgeSearchTool(knowledgeSearch, actor),
+    ...continuityTools({
+      store: continuityStore,
+      actor,
+      ...(run?.channelId ? { channelId: run.channelId } : {}),
+    }),
+    ...(await governedProgramTools({
+      tools: granted,
+      actor,
+      agentId: botId,
+      ...(run ? { run } : {}),
+      store: continuityStore,
+    })),
   ];
   return compactToolCatalog({
-    tools,
+    tools: allowedToolNames
+      ? tools.filter((tool) => allowedToolNames.has(tool.name))
+      : tools,
     actor,
     agentId: botId,
     ...(run ? { run } : {}),
@@ -519,10 +541,70 @@ const stopTaskExecutor = startAutomatedTaskExecutor({
       throw new Error("The assigned coworker is no longer available.");
     }
     const actor = await actorForAutomatedTask(task);
-    const plan = await modelRouteStore.plan(actor, task.run.agentId, {
-      provider: tenantPackage.model.provider,
-      model: tenantPackage.model.defaultModel,
+    const allowedToolNames =
+      task.source.kind === "routine" &&
+      Array.isArray(task.source.safeguards.allowedTools)
+        ? new Set(
+            task.source.safeguards.allowedTools
+              .filter((name): name is string => typeof name === "string")
+              .map((name) => name.trim())
+              .filter(Boolean),
+          )
+        : undefined;
+    if (
+      task.source.kind === "routine" &&
+      task.source.safeguards.deterministic === true
+    ) {
+      const programId = task.source.safeguards.toolProgramId;
+      if (typeof programId !== "string" || !programId) {
+        throw new Error(
+          "The deterministic routine has no reviewed tool program.",
+        );
+      }
+      const rawTools = await grantedTools({
+        store: pluginStore,
+        botId: task.run.agentId,
+        actorId: actor.id,
+        actorRole: actor.role,
+        approvals: approvalService,
+        run: { runId: task.run.id, channelId: task.run.channelId },
+      });
+      const executed = await continuityStore.executeApprovedProgram({
+        actor,
+        agentId: task.run.agentId,
+        programId,
+        tools: allowedToolNames
+          ? rawTools.filter((tool) => allowedToolNames.has(tool.name))
+          : rawTools,
+        run: { runId: task.run.id, channelId: task.run.channelId },
+        signal,
+      });
+      return { output: executed.output };
+    }
+    const pinnedModel =
+      task.source.kind === "routine" &&
+      task.source.safeguards.model &&
+      typeof task.source.safeguards.model === "object" &&
+      !Array.isArray(task.source.safeguards.model)
+        ? (task.source.safeguards.model as Record<string, unknown>)
+        : null;
+    const planned = await modelRouteStore.plan(actor, task.run.agentId, {
+      provider:
+        typeof pinnedModel?.provider === "string"
+          ? pinnedModel.provider
+          : tenantPackage.model.provider,
+      model:
+        typeof pinnedModel?.model === "string"
+          ? pinnedModel.model
+          : tenantPackage.model.defaultModel,
     });
+    const plan = pinnedModel
+      ? {
+          ...planned,
+          candidates: planned.candidates.slice(0, 1),
+          retryableCodes: [],
+        }
+      : planned;
     let lastError: unknown;
     for (const [index, candidate] of plan.candidates.entries()) {
       if (signal.aborted) throw signal.reason;
@@ -546,7 +628,8 @@ const stopTaskExecutor = startAutomatedTaskExecutor({
                   }
                 : undefined,
               stallGuard,
-              (botId, run) => deploymentToolsFor(actor, botId, run),
+              (botId, run) =>
+                deploymentToolsFor(actor, botId, run, allowedToolNames),
               (botId, runId, taskContext) =>
                 mintRunAssertion(
                   {
@@ -816,6 +899,7 @@ const app = createApp(
     Boolean(await resolveConfiguredModelApiKey()),
   ),
   autonomyServices,
+  continuityStore,
 );
 
 /**

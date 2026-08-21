@@ -71,7 +71,12 @@ export type TaskRunEvent = {
 };
 
 export type AutomatedTaskSource =
-  | { kind: "routine"; id: string; instruction: string }
+  | {
+      kind: "routine";
+      id: string;
+      instruction: string;
+      safeguards: Record<string, unknown>;
+    }
   | { kind: "delegation"; id: string; instruction: string }
   | { kind: "external"; id: string; instruction: string };
 
@@ -211,6 +216,8 @@ type AutomatedRow = {
   routineInstruction: string | null;
   routineMode: string | null;
   routineQuietToken: string | null;
+  routineSafeguards: Record<string, unknown> | null;
+  routineNotepad: string | null;
   delegationId: string | null;
   delegationInstructions: string | null;
   delegationExpectedOutput: string | null;
@@ -244,19 +251,29 @@ function automatedTask(row: AutomatedRow): AutomatedTask {
     };
   }
   if (row.routineId && row.routineInstruction) {
-    const instruction =
+    const baseInstruction =
       row.routineMode === "monitor"
         ? [
             row.routineInstruction,
             `If the check finds nothing that needs the person's attention, answer with exactly ${row.routineQuietToken ?? "NO_ACTION"} and nothing else.`,
           ].join("\n\n")
         : row.routineInstruction;
+    const instruction = [
+      baseInstruction,
+      row.routineNotepad?.trim()
+        ? `Routine notepad (durable context for this routine only):\n${row.routineNotepad}`
+        : "",
+    ]
+      .filter(Boolean)
+      .join("\n\n")
+      .slice(0, 30_000);
     return {
       run: rowToRun(row.run),
       source: {
         kind: "routine",
         id: row.routineId,
         instruction,
+        safeguards: row.routineSafeguards ?? {},
       },
     };
   }
@@ -314,6 +331,8 @@ export function createRunStore(
         routineInstruction: routines.instruction,
         routineMode: routines.mode,
         routineQuietToken: routines.quietToken,
+        routineSafeguards: routines.safeguards,
+        routineNotepad: routines.notepad,
         delegationId: delegations.id,
         delegationInstructions: delegations.instructions,
         delegationExpectedOutput: delegations.expectedOutput,

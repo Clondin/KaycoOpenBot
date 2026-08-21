@@ -131,6 +131,17 @@ describe("channel input parser", () => {
     expect(parseChannelInput({ agentIds })).toEqual({ ok: false, error });
   });
 
+  test("caps a Workroom at six coworkers", () => {
+    expect(
+      parseChannelInput({
+        agentIds: Array.from({ length: 7 }, (_, index) => `agent-${index}`),
+      }),
+    ).toEqual({
+      ok: false,
+      error: "A Workroom can include at most 6 coworkers.",
+    });
+  });
+
   test("trims, sorts, and whitelists channel input", () => {
     expect(
       parseChannelInput({

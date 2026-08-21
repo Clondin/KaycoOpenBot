@@ -28,11 +28,14 @@ import {
 } from "./policy";
 import type {
   ClickInput,
+  CheckpointDiffInput,
   KeyInput,
+  ListCheckpointsInput,
   ListFilesInput,
   ReadFileInput,
   ReadResult,
   ObserveResult,
+  RollbackFileInput,
   ScrollInput,
   SecretRequest,
   SnapshotElement,
@@ -690,6 +693,54 @@ export function createComputerGateway(options: ComputerGatewayOptions) {
         actor,
         { filePath: input.path },
         () => as(botId).writeFile(input),
+      );
+    },
+
+    listCheckpoints(
+      computerId: string,
+      botId: string,
+      actor: ActionActor,
+      input: ListCheckpointsInput,
+    ) {
+      return govern(
+        computerId,
+        "computer_list_files",
+        botId,
+        actor,
+        { filePath: input.path ?? "." },
+        () => as(botId).listCheckpoints(input),
+      );
+    },
+
+    checkpointDiff(
+      computerId: string,
+      botId: string,
+      actor: ActionActor,
+      input: CheckpointDiffInput,
+    ) {
+      return govern(
+        computerId,
+        "computer_read_file",
+        botId,
+        actor,
+        { filePath: input.path },
+        () => as(botId).checkpointDiff(input),
+      );
+    },
+
+    rollbackFile(
+      computerId: string,
+      botId: string,
+      actor: ActionActor,
+      input: RollbackFileInput,
+    ) {
+      return govern(
+        computerId,
+        "computer_write_file",
+        botId,
+        actor,
+        { filePath: input.path },
+        () => as(botId).rollbackFile(input),
       );
     },
   };

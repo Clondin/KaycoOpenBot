@@ -414,6 +414,51 @@ export function createComputerRoutes(
     }),
   );
 
+  routes.post("/:botId/files/checkpoints", (context) =>
+    act(context, (botId, actor, body) =>
+      gateway.listCheckpoints(botId, botId, actor, {
+        ...(typeof body?.path === "string" && body.path.trim()
+          ? { path: body.path.trim() }
+          : {}),
+      }),
+    ),
+  );
+
+  routes.post("/:botId/files/checkpoint-diff", (context) =>
+    act(context, (botId, actor, body) => {
+      if (
+        typeof body?.checkpointId !== "string" ||
+        typeof body?.path !== "string" ||
+        !body.checkpointId.trim() ||
+        !body.path.trim()
+      ) {
+        return { error: "Checkpoint ID and file path are required." };
+      }
+      return gateway.checkpointDiff(botId, botId, actor, {
+        checkpointId: body.checkpointId.trim(),
+        path: body.path.trim(),
+      });
+    }),
+  );
+
+  routes.post("/:botId/files/rollback", (context) =>
+    act(context, (botId, actor, body) => {
+      if (
+        typeof body?.checkpointId !== "string" ||
+        typeof body?.path !== "string" ||
+        !body.checkpointId.trim() ||
+        !body.path.trim()
+      ) {
+        return { error: "Checkpoint ID and file path are required." };
+      }
+      return gateway.rollbackFile(botId, botId, actor, {
+        checkpointId: body.checkpointId.trim(),
+        path: body.path.trim(),
+        force: body.force === true,
+      });
+    }),
+  );
+
   /**
    * The policy, readable and writable by an administrator.
    *

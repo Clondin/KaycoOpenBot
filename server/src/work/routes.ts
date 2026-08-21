@@ -310,6 +310,24 @@ export function createWorkRoutes(
               : {}),
             ...(plainObject(body.context) ? { context: body.context } : {}),
             ...(dueAt ? { dueAt } : {}),
+            ...(typeof body.parentDelegationId === "string"
+              ? { parentDelegationId: body.parentDelegationId }
+              : {}),
+            ...(typeof body.maxDepth === "number"
+              ? { maxDepth: body.maxDepth }
+              : {}),
+            ...(typeof body.maxChildren === "number"
+              ? { maxChildren: body.maxChildren }
+              : {}),
+            ...(typeof body.maxParallel === "number"
+              ? { maxParallel: body.maxParallel }
+              : {}),
+            ...(typeof body.budgetMinutes === "number"
+              ? { budgetMinutes: body.budgetMinutes }
+              : {}),
+            ...(typeof body.reviewRequired === "boolean"
+              ? { reviewRequired: body.reviewRequired }
+              : {}),
           }),
         ),
       }),
@@ -366,6 +384,51 @@ export function createWorkRoutes(
         201,
       );
     },
+  );
+
+  routes.post(
+    "/delegations/:delegationId/steer",
+    requireUser,
+    async (context) => {
+      const body = await objectBody(context);
+      if (
+        !body ||
+        (typeof body.instruction !== "string" && body.stop !== true)
+      ) {
+        return context.json(
+          { error: "A steering instruction or stop decision is required." },
+          400,
+        );
+      }
+      return workCall(context, async () => ({
+        delegation: dateDto(
+          await services.delegations.steer(
+            context.var.actor,
+            context.req.param("delegationId"),
+            {
+              ...(typeof body.instruction === "string"
+                ? { instruction: body.instruction }
+                : {}),
+              stop: body.stop === true,
+            },
+          ),
+        ),
+      }));
+    },
+  );
+
+  routes.post(
+    "/delegations/:delegationId/review",
+    requireUser,
+    async (context) =>
+      workCall(context, async () => ({
+        delegation: dateDto(
+          await services.delegations.review(
+            context.var.actor,
+            context.req.param("delegationId"),
+          ),
+        ),
+      })),
   );
 
   routes.get("/memory", requireUser, async (context) => {
@@ -568,6 +631,15 @@ function routineInput(
       Array.isArray(body.delivery))
   ) {
     return { ok: false, error: "Routine delivery settings are invalid." };
+  }
+  if (body.safeguards !== undefined && !plainObject(body.safeguards)) {
+    return { ok: false, error: "Routine safeguards are invalid." };
+  }
+  if (body.notepad !== undefined && typeof body.notepad !== "string") {
+    return { ok: false, error: "Routine notepad must be text." };
+  }
+  if (body.blueprintId !== undefined && typeof body.blueprintId !== "string") {
+    return { ok: false, error: "Routine blueprint is invalid." };
   }
   if (body.schedule !== undefined) {
     const schedule = parseRoutineSchedule(body.schedule);

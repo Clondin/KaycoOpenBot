@@ -163,6 +163,18 @@ export const auditEventTypes = [
   "memory_suggestion.rejected",
   "model_route.changed",
 
+  // Hermes-inspired continuity, still inside OpenBot's review and ownership boundaries.
+  "continuity.snapshot_created",
+  "tool_program.approved",
+  "tool_program.unapproved",
+  "skill.health_changed",
+  "skill.rolled_back",
+  "bot_bundle.created",
+  "bot_bundle.archived",
+  "delegation.steered",
+  "delegation.reviewed",
+  "delegation.tree_stopped",
+
   // Portable persona-only team templates. No credentials, grants, messages, endpoints or ids.
   "team_template.exported",
   "team_template.imported",

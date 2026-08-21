@@ -15,6 +15,7 @@ import { ComputerView } from "@/components/computer/computer-view";
 import { useNeedsYou } from "@/components/computer/needs-you";
 import { DetailPanel } from "@/components/layout/detail-panel";
 import { Button } from "@/components/ui/button";
+import { agentListQueryOptions } from "@/lib/agents/queries";
 import { type AgentChannel, channelQueryOptions } from "@/lib/channels/queries";
 import { onComputerActivity } from "@/lib/copilot/computer-activity";
 
@@ -24,6 +25,8 @@ const chatSearchSchema = z.object({
   watch: z.boolean().optional(),
   /** Opens the in-conversation search bar. */
   find: z.boolean().optional(),
+  /** Explicit active responder in a multi-Bot Workroom. */
+  bot: z.string().optional(),
 });
 
 const EASE_OUT = [0.23, 1, 0.32, 1] as const;
@@ -60,8 +63,9 @@ function ComputerViewPanel({
 
 function RouteComponent() {
   const { channelId } = Route.useParams();
-  const { settings, watch, find } = Route.useSearch();
+  const { settings, watch, find, bot } = Route.useSearch();
   const channel = useQuery(channelQueryOptions(channelId));
+  const profiles = useQuery(agentListQueryOptions());
   const navigate = Route.useNavigate();
   const isSettingsOpen = settings === true;
   const prefersReducedMotion = useReducedMotion();
@@ -90,8 +94,9 @@ function RouteComponent() {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   });
-  /** Channel routing currently supports one coworker. */
-  const agentId = channel.data?.agentIds[0];
+  const agentId = channel.data?.agentIds.includes(bot ?? "")
+    ? bot
+    : channel.data?.agentIds[0];
   /** Needs-you state is rendered by the screen when the screen is already open. */
   const needsYou = useNeedsYou(agentId, !isWatching);
 
@@ -186,6 +191,30 @@ function RouteComponent() {
             >
               {channel.data?.name ?? "Channel"}
             </motion.span>
+            {(channel.data?.agentIds.length ?? 0) > 1 ? (
+              <select
+                aria-label="Active Workroom responder"
+                className="ml-2 h-7 max-w-44 rounded-md border border-border bg-background px-2 text-xs"
+                onChange={(event) =>
+                  void navigate({
+                    search: (previous) => ({
+                      ...previous,
+                      bot: event.target.value,
+                      settings: undefined,
+                      watch: undefined,
+                    }),
+                  })
+                }
+                value={agentId}
+              >
+                {channel.data?.agentIds.map((id) => (
+                  <option key={id} value={id}>
+                    {profiles.data?.find((profile) => profile.id === id)
+                      ?.name ?? id}
+                  </option>
+                ))}
+              </select>
+            ) : null}
           </div>
           <div className="flex flex-row gap-1.5">
             <Button
@@ -237,14 +266,15 @@ function RouteComponent() {
         hasError={Boolean(channel.error)}
         searchOpen={isSearching}
         onCloseSearch={() => void setSearching(false)}
+        runtimeAgentId={agentId}
       />
     </DetailPanel>
   );
 }
 
 /**
- * A channel holds exactly one coworker. More than one is not supported yet, and rendering a shared
- * transcript for several agents before the runtime can route between them would look like it works.
+ * A Workroom shares one durable transcript and always names one active responder. Switching is
+ * explicit so tool and computer ownership never depends on an ambiguous mention.
  */
 function ChannelBody({
   channel,
@@ -252,12 +282,14 @@ function ChannelBody({
   hasError,
   searchOpen,
   onCloseSearch,
+  runtimeAgentId,
 }: {
   channel: AgentChannel | undefined;
   isPending: boolean;
   hasError: boolean;
   searchOpen: boolean;
   onCloseSearch: () => void;
+  runtimeAgentId: string | undefined;
 }) {
   if (isPending) {
     return (
@@ -272,12 +304,10 @@ function ChannelBody({
     );
   }
 
-  const runtimeAgentId =
-    channel.agentIds.length === 1 ? channel.agentIds[0] : undefined;
   if (!runtimeAgentId) {
     return (
       <p className="p-8 text-sm text-muted-foreground">
-        This channel has more than one coworker, which is not supported yet.
+        This Workroom has no available responder.
       </p>
     );
   }
@@ -286,7 +316,7 @@ function ChannelBody({
   return (
     <ChannelChat
       channel={channel}
-      key={channel.id}
+      key={`${channel.id}:${runtimeAgentId}`}
       onCloseSearch={onCloseSearch}
       runtimeAgentId={runtimeAgentId}
       searchOpen={searchOpen}

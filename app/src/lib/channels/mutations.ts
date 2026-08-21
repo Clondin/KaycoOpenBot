@@ -58,3 +58,34 @@ export function recordChannelActivityMutationOptions() {
     },
   });
 }
+
+/**
+ * Maintain OpenBot's derived recall index. Intelligence remains the canonical transcript, so a
+ * failure here affects search/recovery only and must never block the conversation.
+ */
+export function indexContinuityMessageMutationOptions() {
+  return mutationOptions({
+    mutationFn: async (variables: {
+      channelId: string;
+      threadId: string;
+      messageId: string;
+      agentId: string | null;
+      role: "user" | "assistant";
+      content: string;
+      occurredAt: string;
+    }) => {
+      await fetch("/api/continuity/messages", {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          ...variables,
+          anchor: {
+            route: `/channel/${variables.channelId}`,
+            messageId: variables.messageId,
+          },
+        }),
+      });
+    },
+  });
+}

@@ -71,6 +71,7 @@ export type GrantedPlugins = {
     inputSchema: Record<string, unknown>;
   }[];
   skills: {
+    id: string;
     slug: string;
     title: string;
     summary: string;

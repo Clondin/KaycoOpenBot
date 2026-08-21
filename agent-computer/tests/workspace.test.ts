@@ -133,6 +133,48 @@ describe("browser downloads", () => {
   });
 });
 
+describe("workspace Time Machine", () => {
+  test("diffs and selectively rolls back a Bot write, then undoes the rollback", async () => {
+    const ws = workspace();
+    await ws.write("plan.md", "version one");
+    const second = await ws.write("plan.md", "version two");
+
+    const diff = await ws.checkpointDiff(second.checkpointId, "plan.md");
+    expect(diff.before).toBe("version one");
+    expect(diff.current).toBe("version two");
+    expect(diff.changedSinceWrite).toBe(false);
+
+    const restored = await ws.rollback(second.checkpointId);
+    expect((await ws.read("plan.md")).text).toBe("version one");
+
+    await ws.rollback(restored.undoCheckpointId);
+    expect((await ws.read("plan.md")).text).toBe("version two");
+  });
+
+  test("preserves a later human edit by default", async () => {
+    const ws = workspace();
+    await ws.write("plan.md", "before");
+    const checkpoint = await ws.write("plan.md", "after Bot");
+    await writeFile(join(root, "plan.md"), "human edit", "utf8");
+
+    await expect(ws.rollback(checkpoint.checkpointId)).rejects.toThrow(
+      "changed after the Bot wrote it",
+    );
+    expect((await ws.read("plan.md")).text).toBe("human edit");
+  });
+
+  test("keeps checkpoint internals out of workspace paths and listings", async () => {
+    const ws = workspace();
+    await ws.write("notes.md", "kept");
+    expect((await ws.list()).entries.map((entry) => entry.path)).toEqual([
+      "notes.md",
+    ]);
+    await expect(
+      ws.read(".openbot-history/checkpoints/anything"),
+    ).rejects.toThrow(WorkspacePathError);
+  });
+});
+
 describe("listing the workspace", () => {
   test("lists files and folders, recursively, relative to the root", async () => {
     const ws = workspace();

@@ -10,6 +10,10 @@ import type {
   HumanFileResult,
   HumanInputResult,
   KeyInput,
+  CheckpointDiffInput,
+  CheckpointDiffResult,
+  ListCheckpointsInput,
+  ListCheckpointsResult,
   ListFilesInput,
   ListFilesResult,
   NavigateResult,
@@ -19,6 +23,8 @@ import type {
   ReadResult,
   ScreenshotResult,
   ScrollInput,
+  RollbackFileInput,
+  RollbackFileResult,
   SecretRequest,
   SecretResult,
   SnapshotResult,
@@ -509,6 +515,42 @@ export function createComputerClient(options: ComputerClientOptions) {
           undefined,
           true,
         )) as ListFilesResult;
+      },
+
+      async listCheckpoints(
+        input: ListCheckpointsInput,
+      ): Promise<ListCheckpointsResult> {
+        return (await call(
+          "/files/checkpoints",
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(input),
+          },
+          undefined,
+          true,
+        )) as ListCheckpointsResult;
+      },
+
+      async checkpointDiff(
+        input: CheckpointDiffInput,
+      ): Promise<CheckpointDiffResult> {
+        return (await call(
+          "/files/checkpoint-diff",
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(input),
+          },
+          undefined,
+          true,
+        )) as CheckpointDiffResult;
+      },
+
+      async rollbackFile(
+        input: RollbackFileInput,
+      ): Promise<RollbackFileResult> {
+        return (await post("/files/rollback", input)) as RollbackFileResult;
       },
 
       /** Who has the wheel, and whether the Bot is waiting for a person. */

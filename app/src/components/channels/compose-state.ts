@@ -10,13 +10,12 @@ export type Recipient = {
 };
 
 /**
- * One coworker per channel.
- *
- * Matches the chat screen's current one-coworker render contract.
+ * A bounded Workroom roster. Six supports useful specialist teams without turning identity and
+ * tool ownership into an unreadable crowd.
  */
-export const MAX_RECIPIENTS = 1;
+export const MAX_RECIPIENTS = 6;
 
-/** Add a coworker, replacing the oldest once the channel recipient cap is reached. */
+/** Add a coworker while preserving the existing roster once the room cap is reached. */
 export function addRecipient(
   current: readonly Recipient[],
   next: Recipient,
@@ -24,7 +23,7 @@ export function addRecipient(
   if (current.some((recipient) => recipient.id === next.id)) {
     return [...current];
   }
-  return [...current, next].slice(-MAX_RECIPIENTS);
+  return current.length >= MAX_RECIPIENTS ? [...current] : [...current, next];
 }
 
 export function removeRecipient(
@@ -39,5 +38,9 @@ export function canSend(
   recipients: readonly Recipient[],
   text: string,
 ): boolean {
-  return recipients.length === MAX_RECIPIENTS && text.trim().length > 0;
+  return (
+    recipients.length > 0 &&
+    recipients.length <= MAX_RECIPIENTS &&
+    text.trim().length > 0
+  );
 }

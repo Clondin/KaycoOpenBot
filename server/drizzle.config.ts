@@ -21,6 +21,7 @@ export default defineConfig({
     "./src/db/schema/core.ts",
     "./src/db/schema/computer.ts",
     "./src/db/schema/codex.ts",
+    "./src/db/schema/continuity.ts",
     "./src/db/schema/autonomy.ts",
     "./src/db/schema/coworker.ts",
     "./src/db/schema/components.ts",

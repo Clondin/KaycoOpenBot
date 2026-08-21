@@ -264,6 +264,40 @@ export type WriteFileResult = {
   path: string;
   bytes: number;
   appended: boolean;
+  checkpointId: string;
+};
+
+export type WorkspaceCheckpoint = {
+  id: string;
+  path: string;
+  operation: "write" | "append" | "rollback";
+  existed: boolean;
+  beforeHash: string | null;
+  afterHash: string;
+  bytesBefore: number;
+  createdAt: string;
+};
+
+export type ListCheckpointsInput = { path?: string };
+export type ListCheckpointsResult = { checkpoints: WorkspaceCheckpoint[] };
+export type CheckpointDiffInput = { checkpointId: string; path: string };
+export type CheckpointDiffResult = {
+  checkpoint: WorkspaceCheckpoint;
+  before: string;
+  current: string;
+  truncated: boolean;
+  changedSinceWrite: boolean;
+};
+export type RollbackFileInput = {
+  checkpointId: string;
+  path: string;
+  force?: boolean;
+};
+export type RollbackFileResult = {
+  restored: true;
+  path: string;
+  checkpointId: string;
+  undoCheckpointId: string;
 };
 
 /**

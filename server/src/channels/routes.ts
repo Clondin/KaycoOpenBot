@@ -84,6 +84,7 @@ export type ChannelStore = {
 const PRIVATE_AGENT_CHANNEL_DESCRIPTION = "Private agent channel.";
 const MAX_CHANNEL_NAME_CODE_POINTS = 120;
 const MAX_ACTIVITY_CODE_POINTS = 200;
+const MAX_CHANNEL_AGENTS = 6;
 
 /**
  * Reduce a message to one line of plain text.
@@ -462,6 +463,12 @@ export function parseChannelInput(input: unknown): ChannelInputParseResult {
 
   if (!Array.isArray(input.agentIds) || input.agentIds.length === 0) {
     return { ok: false, error: "Agent IDs must be a non-empty array." };
+  }
+  if (input.agentIds.length > MAX_CHANNEL_AGENTS) {
+    return {
+      ok: false,
+      error: `A Workroom can include at most ${MAX_CHANNEL_AGENTS} coworkers.`,
+    };
   }
 
   const agentIds: string[] = [];
