@@ -379,14 +379,15 @@ export function createExternalChannelIngressRoutes(
 ) {
   const routes = new Hono();
   routes.post("/:connectionId", async (context) => {
+    const connectionId = context.req.param("connectionId");
+    if (!UUID_PATTERN.test(connectionId)) {
+      return context.json({ error: "Channel bridge not found." }, 404);
+    }
     try {
-      const result = await channels.ingestHttp(
-        context.req.param("connectionId"),
-        {
-          headers: context.req.raw.headers,
-          rawBody: await context.req.text(),
-        },
-      );
+      const result = await channels.ingestHttp(connectionId, {
+        headers: context.req.raw.headers,
+        rawBody: await context.req.text(),
+      });
       if ("protocolResponse" in result) {
         return context.json(result.protocolResponse);
       }
@@ -406,6 +407,9 @@ export function createExternalChannelIngressRoutes(
   });
   return routes;
 }
+
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 async function objectBody(context: Context) {
   const value = await context.req.json().catch(() => null);

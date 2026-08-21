@@ -41,6 +41,8 @@ function services(overrides: Record<string, unknown> = {}) {
 }
 
 describe("autonomy routes", () => {
+  const bridgeId = "6e23d07c-389a-4d03-a6b8-fccec38cb24b";
+
   test("keeps external-provider creation administrative", async () => {
     let called = false;
     const routes = createAutonomyRoutes(
@@ -84,7 +86,7 @@ describe("autonomy routes", () => {
       },
     } as never);
     const rawBody = '{"update_id":42,"message":{"text":"hello"}}';
-    const response = await routes.request("http://openbot.test/connection-1", {
+    const response = await routes.request(`http://openbot.test/${bridgeId}`, {
       method: "POST",
       headers: { "x-telegram-bot-api-secret-token": "provider-secret" },
       body: rawBody,
@@ -92,7 +94,7 @@ describe("autonomy routes", () => {
     expect(response.status).toBe(202);
     expect(seen).toEqual([
       {
-        connectionId: "connection-1",
+        connectionId: bridgeId,
         rawBody,
         secret: "provider-secret",
       },
@@ -105,7 +107,7 @@ describe("autonomy routes", () => {
         throw new WorkConflictError("This external identity is not paired.");
       },
     } as never);
-    const response = await routes.request("http://openbot.test/connection-1", {
+    const response = await routes.request(`http://openbot.test/${bridgeId}`, {
       method: "POST",
       body: "{}",
     });
@@ -113,5 +115,21 @@ describe("autonomy routes", () => {
     await expect(response.json()).resolves.toEqual({
       error: "This external identity is not paired.",
     });
+  });
+
+  test("rejects malformed bridge IDs before querying storage", async () => {
+    let called = false;
+    const routes = createExternalChannelIngressRoutes({
+      async ingestHttp() {
+        called = true;
+        return { accepted: true, duplicate: false, runId: "run-1" };
+      },
+    } as never);
+    const response = await routes.request("http://openbot.test/not-a-uuid", {
+      method: "POST",
+      body: "{}",
+    });
+    expect(response.status).toBe(404);
+    expect(called).toBe(false);
   });
 });
