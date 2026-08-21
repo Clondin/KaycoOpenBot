@@ -115,7 +115,7 @@ A Bot is any endpoint speaking [AG-UI](https://github.com/ag-ui-protocol/ag-ui),
 | `/`                  | Start and browse channels.                                         |
 | `/agents`            | Create, edit, duplicate, hide, delete, and launch coworkers.       |
 | `/channel/:id`       | Converse with one or more coworkers, select who answers, and view that Bot's live screen/profile panel. |
-| `/work`              | Run the durable queue, routines, handoffs, projects, integration recipes, notifications, and inspectable memory. |
+| `/work`              | Run the durable queue, routines, monitors, external channels, reviewed learning, fallbacks, handoffs, projects, notifications, and inspectable memory. |
 | `/bot`               | Direct chat with a Bot; `?agent=<id>` selects one.                 |
 | `/skills`            | Create and enable personal skills.                                 |
 | `/settings`          | User preferences.                                                  |
@@ -143,6 +143,7 @@ A Bot is any endpoint speaking [AG-UI](https://github.com/ag-ui-protocol/ag-ui),
 - **Governed MCP with OAuth**: a curated catalogue ships for Atlassian, Box, Slack, Salesforce and ServiceNow. Servers can use a write-only bearer token or OAuth discovery, dynamic registration and PKCE; encrypted tokens, grants, policy, approvals and audit stay server-side.
 - **Skills are instructions, not capabilities**: personal skills attach only to Bots their author owns, deployment skills are admin-owned, and both are invoked with `/` in the composer.
 - **Durable work control center**: `/work` combines queued and active runs, reusable manual/scheduled/webhook routines, user-to-Bot and Bot-to-Bot handoffs, shared project artifacts, and actionable notifications. A leased executor adds heartbeats, bounded attempts, timeout budgets, retries and crash recovery.
+- **Governed autonomy without a second runtime**: proactive monitors stay quiet when nothing needs attention; paired Telegram, Slack, Discord, and signed webhook messages use the ordinary task queue and a retrying outbox; skill and memory learning stays in review; transient model failures can follow a visible fallback route; and large tool catalogs/results are bounded without bypassing grants or policy.
 - **Shared project teams**: assign several coworkers to a project, open one team channel, and explicitly choose which coworker answers each turn. Computers, credentials, and browser sessions remain isolated per Bot.
 - **Portable team templates**: export a team's names and standing roles, then import them as new private coworkers. Templates never carry ids, endpoints, credentials, grants, messages, ownership, or visibility.
 - **Inspectable memory**: stable user, coworker, and project context is stored in PostgreSQL with scope, source, confidence, and pinning. People can inspect, edit, or remove it; relevant user and coworker memory is supplied to the active conversation.

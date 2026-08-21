@@ -51,6 +51,11 @@ These are durable product directions, not a complete change log:
   and direct human paste/file transfer are Kayco product behavior.
 - **Extensions and quality:** a versioned extension SDK, policy evaluations,
   and operational tooling are active product development areas.
+- **Governed autonomy:** proactive monitors, paired external chat bridges,
+  reviewed skill learning, memory promotion, model fallback routes, lazy tool
+  discovery, and bounded tool-result artifacts are Kayco product behavior. See
+  [the OpenClaw capability harvest](openclaw-harvest.md) for provenance and
+  intentionally preserved boundaries.
 
 When upstream changes overlap one of these areas, preserve the Kayco product
 contract while incorporating compatible fixes and improvements. If a product

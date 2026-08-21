@@ -81,6 +81,7 @@ export type CodexAgentProvider = {
     userId: string,
     agent: RegisteredBuiltInAgent,
     loadTools: (run?: ToolRunContext) => Promise<GrantedTool[]>,
+    preferences?: { model?: string },
   ): Promise<AbstractAgent | null>;
 };
 
@@ -420,7 +421,11 @@ export async function resolveRuntimeAgents(
   loadAgents: () => Promise<RegisteredAgent[]>,
   model: RuntimeModel,
   resolveModelApiKey: () => Promise<string | null>,
-  codex?: { userId: string; provider: CodexAgentProvider },
+  codex?: {
+    userId: string;
+    provider: CodexAgentProvider;
+    preferences?: { model?: string };
+  },
   stallGuard?: StallGuard,
   loadTools?: LoadToolsForBot,
   signRun?: SignRun,
@@ -443,6 +448,7 @@ export async function resolveRuntimeAgents(
           codex.userId,
           agent,
           (run) => toolsFor(agent.id, run),
+          codex.preferences,
         );
         if (replacement) overrides.set(agent.id, replacement);
       }),

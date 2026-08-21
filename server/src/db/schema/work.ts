@@ -163,6 +163,11 @@ export const routines = pgTable(
     name: text("name").notNull(),
     description: text("description").notNull().default(""),
     instruction: text("instruction").notNull(),
+    /** `monitor` adds quiet-result semantics while using the same durable routine queue. */
+    mode: text("mode").notNull().default("routine"),
+    quietToken: text("quiet_token").notNull().default("NO_ACTION"),
+    /** Optional notification/external delivery preferences; never contains a secret. */
+    delivery: jsonb("delivery").notNull().default({}),
     status: routineStatus("status").notNull().default("active"),
     trigger: routineTrigger("trigger").notNull().default("manual"),
     /** Reviewed, user-facing recurrence rather than an opaque command-like cron string. */

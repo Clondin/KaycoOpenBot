@@ -23,9 +23,15 @@ import {
   delegations,
   documentAcls,
   documents,
+  externalChannelConnections,
+  externalIdentityLinks,
+  externalMessages,
   intelligenceChannelMappings,
   memoryEntries,
+  memorySuggestions,
   messageReactions,
+  modelRouteAttempts,
+  modelRoutes,
   notifications,
   projectAgents,
   projectArtifacts,
@@ -35,8 +41,10 @@ import {
   routines,
   sessions,
   syncRuns,
+  skillProposals,
   taskRunEvents,
   taskRuns,
+  toolResultArtifacts,
   userRoles,
   users,
   verifications,
@@ -141,6 +149,30 @@ describe("OpenBot database schema", () => {
         "pinned",
       ]),
     );
+  });
+
+  test("defines governed autonomy records around ordinary task runs", () => {
+    expect(
+      [
+        externalChannelConnections,
+        externalIdentityLinks,
+        externalMessages,
+        skillProposals,
+        memorySuggestions,
+        modelRoutes,
+        modelRouteAttempts,
+        toolResultArtifacts,
+      ].map(getTableName),
+    ).toEqual([
+      "external_channel_connections",
+      "external_identity_links",
+      "external_messages",
+      "skill_proposals",
+      "memory_suggestions",
+      "model_routes",
+      "model_route_attempts",
+      "tool_result_artifacts",
+    ]);
   });
 
   test("keeps document embeddings and ACLs separate from document metadata", () => {

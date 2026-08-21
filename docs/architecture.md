@@ -176,6 +176,31 @@ remains the source of truth: people can inspect, pin, edit, or remove entries.
 Secrets and transient chat text are explicitly excluded from the memory tool's
 contract.
 
+### Governed autonomy
+
+The Autonomy section of `/work` extends the same durable queue; it does not add
+a second agent runtime:
+
+- monitor routines add active-hour scheduling and suppress notifications only
+  when the result exactly matches their quiet token;
+- external provider requests are signature-checked, identity-paired, and
+  deduplicated before they create a task run;
+- successful external runs create outbox rows whose delivery is leased,
+  bounded, retried, and recovered after an expired worker lease;
+- learned skills and memory remain proposals until reviewed, and skill apply or
+  rollback refuses when the installed content hash has changed;
+- unattended built-in runs advance through model candidates only for selected
+  transient failure classes and record every routing attempt;
+- once a Bot has more than twelve granted deployment tools, the runtime exposes
+  catalog search, describe, and call tools rather than injecting every schema;
+- a tool result over 12,000 characters is shortened for the prompt while its
+  full value becomes a 30-day, owner-scoped artifact.
+
+Provider credentials remain in the existing vault. Generic outbound webhook
+URLs use the same DNS and private-network checks as other server egress. The
+full provenance and provider contracts are in
+[openclaw-harvest.md](openclaw-harvest.md).
+
 See [coworkers.md](coworkers.md).
 
 ## Components

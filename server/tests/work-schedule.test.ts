@@ -44,4 +44,37 @@ describe("routine schedules", () => {
       ).toISOString(),
     ).toBe("2026-08-19T12:15:00.000Z");
   });
+
+  test("defers interval monitors until their next active minute", () => {
+    const schedule = {
+      kind: "every_minutes" as const,
+      interval: 15,
+      activeHours: { start: "08:00", end: "18:00" },
+    };
+    expect(
+      nextScheduledAt(
+        schedule,
+        "UTC",
+        new Date("2026-08-19T17:55:00.000Z"),
+      ).toISOString(),
+    ).toBe("2026-08-20T08:00:00.000Z");
+    expect(scheduleLabel(schedule, "UTC")).toContain("active 08:00–18:00 UTC");
+  });
+
+  test("accepts overnight active hours and rejects empty windows", () => {
+    expect(
+      parseRoutineSchedule({
+        kind: "every_minutes",
+        interval: 30,
+        activeHours: { start: "22:00", end: "06:00" },
+      }).ok,
+    ).toBe(true);
+    expect(
+      parseRoutineSchedule({
+        kind: "every_minutes",
+        interval: 30,
+        activeHours: { start: "08:00", end: "08:00" },
+      }).ok,
+    ).toBe(false);
+  });
 });

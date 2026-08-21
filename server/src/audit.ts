@@ -147,6 +147,22 @@ export const auditEventTypes = [
   "delegation.created",
   "memory.created",
 
+  // OpenClaw-inspired autonomy, still behind OpenBot's identity, review, and delivery boundaries.
+  "external_channel.created",
+  "external_channel.updated",
+  "external_identity.paired",
+  "external_message.received",
+  "external_message.delivered",
+  "external_message.failed",
+  "skill_proposal.created",
+  "skill_proposal.applied",
+  "skill_proposal.rejected",
+  "skill_proposal.rolled_back",
+  "memory_suggestion.created",
+  "memory_suggestion.promoted",
+  "memory_suggestion.rejected",
+  "model_route.changed",
+
   // Portable persona-only team templates. No credentials, grants, messages, endpoints or ids.
   "team_template.exported",
   "team_template.imported",
