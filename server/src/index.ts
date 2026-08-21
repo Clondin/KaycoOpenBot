@@ -6,6 +6,17 @@ import { createAgentProfileStore } from "./agents/profile-store";
 import { createRuntimeAgentLoader } from "./agents/runtime-agents";
 import { createApp } from "./app";
 import { createApprovalService } from "./approvals/store";
+import {
+  createExternalChannelStore,
+  startExternalDeliveryWorker,
+} from "./autonomy/channels";
+import { createLearningStore } from "./autonomy/learning";
+import { createModelRouteStore } from "./autonomy/routing";
+import { classifyModelFailure } from "./autonomy/routing";
+import {
+  compactToolCatalog,
+  createToolResultStore,
+} from "./autonomy/tool-catalog";
 import { createAuditReader, createAuditStore, recordAuditEvent } from "./audit";
 import { createAuth } from "./auth";
 import { DEV_ACTOR, initializeDevActorUser } from "./auth/dev-actor";
@@ -151,10 +162,16 @@ const codexPreferences = codexConfig
 const codexAgentProvider: CodexAgentProvider | undefined =
   codexConfig && codexManager && codexThreadStore
     ? {
-        async agentFor(userId, agent, loadTools) {
+        async agentFor(userId, agent, loadTools, override) {
           const snapshot = await codexManager.account(userId);
           if (snapshot.account?.type !== "chatgpt") return null;
-          const preferences = await codexPreferences?.get(userId);
+          const savedPreferences = await codexPreferences?.get(userId);
+          const preferences = override?.model
+            ? {
+                ...(savedPreferences ?? { effort: null }),
+                model: override.model,
+              }
+            : savedPreferences;
           return new CodexAgent({
             userId,
             agentId: agent.id,
@@ -313,6 +330,31 @@ const pluginStore = createPluginStore({
   approvals: approvalService,
   allowPrivateHosts: config.computer?.allowPrivateHosts === true,
 });
+const toolResultStore = createToolResultStore(database);
+const modelRouteStore = createModelRouteStore(database, bootAuditStore);
+const externalChannelStore = createExternalChannelStore({
+  database,
+  runs: runStore,
+  credentials: credentialStore,
+  encryptionKey: config.keyEncryptionKey,
+  audit: bootAuditStore,
+  allowPrivateHosts: config.computer?.allowPrivateHosts === true,
+});
+const learningStore = createLearningStore({
+  database,
+  plugins: pluginStore,
+  runs: runStore,
+  memory: memoryStore,
+  audit: bootAuditStore,
+});
+const autonomyServices = {
+  channels: externalChannelStore,
+  learning: learningStore,
+  routing: modelRouteStore,
+  results: toolResultStore,
+};
+const stopExternalDeliveryWorker =
+  startExternalDeliveryWorker(externalChannelStore);
 
 void recordAuditEvent(bootAuditStore, {
   eventType: "computer.policy_loaded",
@@ -441,17 +483,26 @@ const deploymentToolsFor = async (
   actor: AgentActor,
   botId: string,
   run?: Parameters<typeof grantedTools>[0]["run"],
-) => [
-  ...(await grantedTools({
-    store: pluginStore,
-    botId,
-    actorId: actor.id,
-    actorRole: actor.role,
-    approvals: approvalService,
+) => {
+  const tools = [
+    ...(await grantedTools({
+      store: pluginStore,
+      botId,
+      actorId: actor.id,
+      actorRole: actor.role,
+      approvals: approvalService,
+      ...(run ? { run } : {}),
+    })),
+    knowledgeSearchTool(knowledgeSearch, actor),
+  ];
+  return compactToolCatalog({
+    tools,
+    actor,
+    agentId: botId,
     ...(run ? { run } : {}),
-  })),
-  knowledgeSearchTool(knowledgeSearch, actor),
-];
+    results: toolResultStore,
+  });
+};
 
 const actorForAutomatedTask = async (task: AutomatedTask) => {
   const roles = await roleRepository.rolesForUser(task.run.actorUserId);
@@ -463,40 +514,90 @@ const actorForAutomatedTask = async (task: AutomatedTask) => {
 
 const stopTaskExecutor = startAutomatedTaskExecutor({
   runs: runStore,
-  execute: (task, signal) =>
-    executeTaskWithAgent(
-      task,
-      async (claimed) => {
-        if (signal.aborted || !claimed.run.agentId) return null;
-        const actor = await actorForAutomatedTask(claimed);
-        const agents = await resolveRuntimeAgents(
-          () => loadAgentsForActor(actor),
-          tenantPackage.model,
-          resolveConfiguredModelApiKey,
-          codexAgentProvider
-            ? { userId: actor.id, provider: codexAgentProvider }
-            : undefined,
-          stallGuard,
-          (botId, run) => deploymentToolsFor(actor, botId, run),
-          (botId, runId, taskContext) =>
-            mintRunAssertion(
+  execute: async (task, signal) => {
+    if (!task.run.agentId) {
+      throw new Error("The assigned coworker is no longer available.");
+    }
+    const actor = await actorForAutomatedTask(task);
+    const plan = await modelRouteStore.plan(actor, task.run.agentId, {
+      provider: tenantPackage.model.provider,
+      model: tenantPackage.model.defaultModel,
+    });
+    let lastError: unknown;
+    for (const [index, candidate] of plan.candidates.entries()) {
+      if (signal.aborted) throw signal.reason;
+      try {
+        const result = await executeTaskWithAgent(
+          task,
+          async (claimed) => {
+            if (signal.aborted || !claimed.run.agentId) return null;
+            const agents = await resolveRuntimeAgents(
+              () => loadAgentsForActor(actor),
               {
-                botId,
-                actorId: actor.id,
-                runId,
-                ...(taskContext?.runId ? { taskRunId: taskContext.runId } : {}),
-                ...(taskContext?.channelId
-                  ? { channelId: taskContext.channelId }
-                  : {}),
+                ...tenantPackage.model,
+                defaultModel: candidate.model,
               },
-              config.keyEncryptionKey,
-            ),
-          agentFetch,
+              resolveConfiguredModelApiKey,
+              codexAgentProvider
+                ? {
+                    userId: actor.id,
+                    provider: codexAgentProvider,
+                    preferences: { model: candidate.model },
+                  }
+                : undefined,
+              stallGuard,
+              (botId, run) => deploymentToolsFor(actor, botId, run),
+              (botId, runId, taskContext) =>
+                mintRunAssertion(
+                  {
+                    botId,
+                    actorId: actor.id,
+                    runId,
+                    ...(taskContext?.runId
+                      ? { taskRunId: taskContext.runId }
+                      : {}),
+                    ...(taskContext?.channelId
+                      ? { channelId: taskContext.channelId }
+                      : {}),
+                  },
+                  config.keyEncryptionKey,
+                ),
+              agentFetch,
+            );
+            return agents[claimed.run.agentId] ?? null;
+          },
+          signal,
         );
-        return agents[claimed.run.agentId] ?? null;
-      },
-      signal,
-    ),
+        await modelRouteStore
+          .recordAttempt({
+            routeId: plan.routeId,
+            taskRunId: task.run.id,
+            ordinal: task.run.attempt * 10 + index,
+            candidate,
+            outcome: "succeeded",
+          })
+          .catch(() => undefined);
+        return result;
+      } catch (error) {
+        lastError = error;
+        const errorCode = classifyModelFailure(error);
+        await modelRouteStore
+          .recordAttempt({
+            routeId: plan.routeId,
+            taskRunId: task.run.id,
+            ordinal: task.run.attempt * 10 + index,
+            candidate,
+            outcome: "failed",
+            errorCode,
+          })
+          .catch(() => undefined);
+        const hasFallback = index < plan.candidates.length - 1;
+        if (!hasFallback || !plan.retryableCodes.includes(errorCode))
+          throw error;
+      }
+    }
+    throw lastError ?? new Error("Every configured model candidate failed.");
+  },
   onStarted: async (task) => {
     if (task.source.kind === "delegation") {
       await delegationStore.transition(
@@ -525,15 +626,29 @@ const stopTaskExecutor = startAutomatedTaskExecutor({
         "completed",
         { result: result.output },
       );
+    } else if (task.source.kind === "external") {
+      await externalChannelStore.completeInbound(task.source.id, result.output);
     } else {
-      await notificationStore.create({
-        userId: task.run.actorUserId,
-        kind: "routine",
-        title: "Routine completed",
-        body: task.run.title,
-        targetUrl: `/channel/${task.run.channelId}`,
-        metadata: { routineId: task.source.id, runId: task.run.id },
-      });
+      const completion = await routineStore.completion(
+        task.source.id,
+        result.output,
+      );
+      if (!completion.quiet) {
+        await notificationStore.create({
+          userId: task.run.actorUserId,
+          kind: "routine",
+          title:
+            completion.mode === "monitor"
+              ? "Monitor found something"
+              : "Routine completed",
+          body:
+            completion.mode === "monitor"
+              ? result.output.slice(0, 500)
+              : task.run.title,
+          targetUrl: `/channel/${task.run.channelId}`,
+          metadata: { routineId: task.source.id, runId: task.run.id },
+        });
+      }
     }
     await recordAuditEvent(bootAuditStore, {
       actorUserId: task.run.actorUserId,
@@ -551,6 +666,8 @@ const stopTaskExecutor = startAutomatedTaskExecutor({
         "failed",
         { error },
       );
+    } else if (task.source.kind === "external") {
+      await externalChannelStore.failInbound(task.source.id, error);
     } else {
       await notificationStore.create({
         userId: task.run.actorUserId,
@@ -698,6 +815,7 @@ const app = createApp(
   createHealthReader(database, async () =>
     Boolean(await resolveConfiguredModelApiKey()),
   ),
+  autonomyServices,
 );
 
 /**
@@ -853,6 +971,7 @@ if (config.devNoAuth) {
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.on(signal, () => {
     stopRoutineScheduler();
+    stopExternalDeliveryWorker();
     stallGuard.stop();
     void Promise.all([
       channelActivityListener.stop(),

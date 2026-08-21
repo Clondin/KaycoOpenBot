@@ -7,5 +7,6 @@ Start with the root [README](../README.md), then use these references:
 - [Configuration](configuration.md): environment variables and tenant package YAML.
 - [Development](development.md): local setup, migrations, ports, and quality checks.
 - [Coworkers](coworkers.md): durable Bot profiles, channels, visibility, deletion, and external AG-UI registration.
+- [OpenClaw capability harvest](openclaw-harvest.md): provenance, imported product patterns, provider setup, and preserved trust boundaries.
 
 Do not include credential values, customer data, transcripts, or local-only notes in public docs.

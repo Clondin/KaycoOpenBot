@@ -1,5 +1,6 @@
 import {
   IconBell,
+  IconBolt,
   IconBrain,
   IconBriefcase,
   IconCheck,
@@ -15,6 +16,7 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { z } from "zod";
 import { PageShell } from "@/components/layout/page-shell";
+import { AutonomyView } from "@/components/work/autonomy-view";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -48,7 +50,14 @@ import {
 
 const viewSchema = z.object({
   view: z
-    .enum(["queue", "routines", "projects", "integrations", "memory"])
+    .enum([
+      "queue",
+      "routines",
+      "autonomy",
+      "projects",
+      "integrations",
+      "memory",
+    ])
     .optional(),
 });
 
@@ -119,6 +128,7 @@ function WorkPage() {
             [
               ["queue", "Queue", IconBriefcase],
               ["routines", "Routines", IconClock],
+              ["autonomy", "Autonomy", IconBolt],
               ["projects", "Projects", IconGitBranch],
               ["integrations", "Integrations", IconPlug],
               ["memory", "Memory", IconBrain],
@@ -160,6 +170,13 @@ function WorkPage() {
             channels={channels.data ?? []}
             projects={data.projects}
             routines={data.routines}
+          />
+        ) : current === "autonomy" ? (
+          <AutonomyView
+            agents={agents.data ?? []}
+            channels={channels.data ?? []}
+            routines={data.routines}
+            runs={data.runs}
           />
         ) : current === "projects" ? (
           <ProjectsView

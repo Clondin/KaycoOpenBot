@@ -26,8 +26,10 @@ import {
 
 export const ROUTINE_STATUSES = ["active", "paused", "archived"] as const;
 export const ROUTINE_TRIGGERS = ["manual", "schedule", "webhook"] as const;
+export const ROUTINE_MODES = ["routine", "monitor"] as const;
 export type RoutineStatus = (typeof ROUTINE_STATUSES)[number];
 export type RoutineTrigger = (typeof ROUTINE_TRIGGERS)[number];
+export type RoutineMode = (typeof ROUTINE_MODES)[number];
 
 export type RoutineInput = {
   name: string;
@@ -37,6 +39,9 @@ export type RoutineInput = {
   channelId: string;
   projectId?: string;
   status?: RoutineStatus;
+  mode?: RoutineMode;
+  quietToken?: string;
+  delivery?: Record<string, unknown>;
   trigger: RoutineTrigger;
   schedule?: RoutineSchedule;
   timezone?: string;
@@ -44,11 +49,13 @@ export type RoutineInput = {
 
 export type RoutineRecord = Omit<
   typeof routines.$inferSelect,
-  "schedule" | "status" | "trigger"
+  "schedule" | "status" | "trigger" | "mode" | "delivery"
 > & {
   schedule: RoutineSchedule | null;
   status: RoutineStatus;
   trigger: RoutineTrigger;
+  mode: RoutineMode;
+  delivery: Record<string, unknown>;
   scheduleLabel: string | null;
   latestRun: TaskRun | null;
 };
@@ -149,17 +156,19 @@ export function createRoutineStore(
         .update(routines)
         .set({ lastRunAt: scheduledFor, updatedAt: new Date() })
         .where(eq(routines.id, routine.id));
-      await notifications.create({
-        userId: routine.ownerUserId,
-        kind: "routine",
-        title:
-          reason === "schedule"
-            ? "Scheduled routine is ready"
-            : "Routine queued",
-        body: `${routine.name} is in the work queue for its coworker.`,
-        targetUrl: `/channel/${routine.channelId}`,
-        metadata: { routineId: routine.id, runId: run.id, reason },
-      });
+      if (routine.mode !== "monitor") {
+        await notifications.create({
+          userId: routine.ownerUserId,
+          kind: "routine",
+          title:
+            reason === "schedule"
+              ? "Scheduled routine is ready"
+              : "Routine queued",
+          body: `${routine.name} is in the work queue for its coworker.`,
+          targetUrl: `/channel/${routine.channelId}`,
+          metadata: { routineId: routine.id, runId: run.id, reason },
+        });
+      }
       if (audit) {
         await recordAuditEvent(audit, {
           actorUserId: routine.ownerUserId,
@@ -222,6 +231,9 @@ export function createRoutineStore(
             "Routine instruction",
             20_000,
           ),
+          mode: input.mode ?? "routine",
+          quietToken: safeLine(input.quietToken ?? "NO_ACTION", "Quiet token"),
+          delivery: input.delivery ?? {},
           status: input.status ?? "active",
           trigger: input.trigger,
           schedule: timing.schedule ?? {},
@@ -299,6 +311,11 @@ export function createRoutineStore(
           ...(input.channelId ? { channelId: input.channelId } : {}),
           ...(input.projectId ? { projectId: input.projectId } : {}),
           ...(input.status ? { status: input.status } : {}),
+          ...(input.mode ? { mode: input.mode } : {}),
+          ...(input.quietToken !== undefined
+            ? { quietToken: safeLine(input.quietToken, "Quiet token") }
+            : {}),
+          ...(input.delivery !== undefined ? { delivery: input.delivery } : {}),
           trigger,
           ...(current.trigger === "webhook" && trigger !== "webhook"
             ? { webhookTokenHash: null }
@@ -394,6 +411,30 @@ export function createRoutineStore(
       }
       return dispatch(routine, "webhook", new Date());
     },
+
+    /** Resolve monitor quiet semantics after execution without exposing another owner-scoped path. */
+    async completion(routineId: string, output: string) {
+      const [routine] = await database
+        .select({
+          mode: routines.mode,
+          quietToken: routines.quietToken,
+          delivery: routines.delivery,
+        })
+        .from(routines)
+        .where(eq(routines.id, routineId));
+      if (!routine) throw new WorkNotFoundError("Routine not found.");
+      const normalized = output.trim();
+      return {
+        mode: ROUTINE_MODES.includes(routine.mode as RoutineMode)
+          ? (routine.mode as RoutineMode)
+          : "routine",
+        quiet:
+          routine.mode === "monitor" &&
+          normalized.toLocaleUpperCase() ===
+            routine.quietToken.trim().toLocaleUpperCase(),
+        delivery: routine.delivery as Record<string, unknown>,
+      };
+    },
   };
 }
 
@@ -405,6 +446,10 @@ function mapRoutine(row: RoutineRow, latestRun: TaskRun | null): RoutineRecord {
     ...row,
     status: row.status as RoutineStatus,
     trigger: row.trigger as RoutineTrigger,
+    mode: ROUTINE_MODES.includes(row.mode as RoutineMode)
+      ? (row.mode as RoutineMode)
+      : "routine",
+    delivery: row.delivery as Record<string, unknown>,
     schedule,
     scheduleLabel: schedule ? scheduleLabel(schedule, row.timezone) : null,
     latestRun,

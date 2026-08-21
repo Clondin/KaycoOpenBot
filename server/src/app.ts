@@ -7,6 +7,11 @@ import type { AgentProfileStore } from "./agents/profile-store";
 import { createAgentRoutes } from "./agents/routes";
 import type { ApprovalService } from "./approvals/store";
 import {
+  createAutonomyRoutes,
+  createExternalChannelIngressRoutes,
+  type AutonomyServices,
+} from "./autonomy/routes";
+import {
   type AuditReader,
   type AuditStore,
   auditQueryFromUrl,
@@ -147,6 +152,8 @@ export function createApp(
   /** First-party deployment tools that remote AG-UI coworkers call through the signed gateway. */
   agentToolCall?: AgentToolCall,
   healthReader?: HealthReader,
+  /** Always-on bridges, reviewed learning, fallback policy, and bounded tool artifacts. */
+  autonomyServices?: AutonomyServices,
 ) {
   const app = new Hono<{ Variables: AppVariables }>();
 
@@ -706,6 +713,18 @@ export function createApp(
     app.route(
       "/api/hooks/routines",
       createRoutineWebhookRoutes(workServices.routines),
+    );
+  }
+
+  if (autonomyServices) {
+    app.route(
+      "/api/autonomy",
+      createAutonomyRoutes(autonomyServices, requireUser),
+    );
+    // Provider webhooks authenticate with provider signatures or a one-time-visible bridge secret.
+    app.route(
+      "/api/hooks/channels",
+      createExternalChannelIngressRoutes(autonomyServices.channels),
     );
   }
 

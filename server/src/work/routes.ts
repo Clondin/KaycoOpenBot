@@ -24,6 +24,8 @@ import type { ProjectStatus, ProjectStore } from "./projects";
 import {
   ROUTINE_STATUSES,
   ROUTINE_TRIGGERS,
+  ROUTINE_MODES,
+  type RoutineMode,
   type RoutineStatus,
   type RoutineInput,
   type RoutineStore,
@@ -552,6 +554,20 @@ function routineInput(
     !ROUTINE_STATUSES.includes(body.status as RoutineStatus)
   ) {
     return { ok: false, error: "Routine status is invalid." };
+  }
+  if (
+    body.mode !== undefined &&
+    !ROUTINE_MODES.includes(body.mode as RoutineMode)
+  ) {
+    return { ok: false, error: "Routine mode is invalid." };
+  }
+  if (
+    body.delivery !== undefined &&
+    (!body.delivery ||
+      typeof body.delivery !== "object" ||
+      Array.isArray(body.delivery))
+  ) {
+    return { ok: false, error: "Routine delivery settings are invalid." };
   }
   if (body.schedule !== undefined) {
     const schedule = parseRoutineSchedule(body.schedule);

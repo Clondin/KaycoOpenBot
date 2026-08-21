@@ -25,16 +25,20 @@ export type ProjectArtifact = {
   updatedAt: string;
 };
 
-export type RoutineSchedule =
+export type RoutineSchedule = (
   | { kind: "every_minutes"; interval: number }
   | { kind: "daily"; time: string }
-  | { kind: "weekly"; days: number[]; time: string };
+  | { kind: "weekly"; days: number[]; time: string }
+) & { activeHours?: { start: string; end: string } };
 
 export type Routine = {
   id: string;
   name: string;
   description: string;
   instruction: string;
+  mode: "routine" | "monitor";
+  quietToken: string;
+  delivery: Record<string, unknown>;
   agentId: string;
   channelId: string;
   projectId: string | null;
