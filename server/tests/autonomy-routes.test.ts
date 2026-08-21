@@ -68,7 +68,11 @@ describe("autonomy routes", () => {
   });
 
   test("passes the exact provider body and headers to signature verification", async () => {
-    const seen: Array<{ connectionId: string; rawBody: string; secret: string | null }> = [];
+    const seen: Array<{
+      connectionId: string;
+      rawBody: string;
+      secret: string | null;
+    }> = [];
     const routes = createExternalChannelIngressRoutes({
       async ingestHttp(connectionId, input) {
         seen.push({
@@ -80,14 +84,11 @@ describe("autonomy routes", () => {
       },
     } as never);
     const rawBody = '{"update_id":42,"message":{"text":"hello"}}';
-    const response = await routes.request(
-      "http://openbot.test/connection-1",
-      {
-        method: "POST",
-        headers: { "x-telegram-bot-api-secret-token": "provider-secret" },
-        body: rawBody,
-      },
-    );
+    const response = await routes.request("http://openbot.test/connection-1", {
+      method: "POST",
+      headers: { "x-telegram-bot-api-secret-token": "provider-secret" },
+      body: rawBody,
+    });
     expect(response.status).toBe(202);
     expect(seen).toEqual([
       {

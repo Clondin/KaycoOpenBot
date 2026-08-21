@@ -58,9 +58,7 @@ describe("routine schedules", () => {
         new Date("2026-08-19T17:55:00.000Z"),
       ).toISOString(),
     ).toBe("2026-08-20T08:00:00.000Z");
-    expect(scheduleLabel(schedule, "UTC")).toContain(
-      "active 08:00–18:00 UTC",
-    );
+    expect(scheduleLabel(schedule, "UTC")).toContain("active 08:00–18:00 UTC");
   });
 
   test("accepts overnight active hours and rejects empty windows", () => {
