@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { readToolName } from "../src/lib/plugins/tool-name";
+import { readToolName, toolActivityLabel } from "../src/lib/plugins/tool-name";
 
 /**
  * What the person watching is told a Bot just did.
@@ -41,5 +41,18 @@ describe("naming a tool call", () => {
   test("a component the app registered is left alone", () => {
     // These names were chosen by somebody and are already what the reader should see.
     expect(readToolName("showBarChart")).toEqual({ label: "showBarChart" });
+  });
+
+  test("computer activity uses plain language instead of protocol names", () => {
+    expect(toolActivityLabel("computer_navigate")).toBe("Opening a page");
+    expect(toolActivityLabel("computer_read")).toBe("Reading the page");
+    expect(toolActivityLabel("computer_request_secret")).toBe(
+      "Requesting a secret",
+    );
+  });
+
+  test("other activity labels keep the ordinary naming rules", () => {
+    expect(toolActivityLabel("mcp__slack__post_message")).toBe("Post message");
+    expect(toolActivityLabel("showBarChart")).toBe("showBarChart");
   });
 });

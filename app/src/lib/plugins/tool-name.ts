@@ -16,6 +16,37 @@ export type ToolName = {
   detail?: string;
 };
 
+/**
+ * Present-tense labels for the built-in computer tools while they are running.
+ *
+ * Their protocol names are deliberately machine-shaped (`computer_navigate`), while the activity
+ * bar is a sentence for the person watching. Keep this mapping separate from `readToolName`: that
+ * function also names user-registered components, whose chosen names must remain untouched.
+ */
+const COMPUTER_ACTIVITY_LABELS: Readonly<Record<string, string>> = {
+  computer_click: "Clicking",
+  computer_extract_table: "Extracting table data",
+  computer_fill_form: "Filling the form",
+  computer_key: "Pressing a key",
+  computer_list_files: "Listing files",
+  computer_navigate: "Opening a page",
+  computer_observe: "Observing the page",
+  computer_read: "Reading the page",
+  computer_read_file: "Reading a file",
+  computer_request_help: "Asking for help",
+  computer_request_secret: "Requesting a secret",
+  computer_screenshot: "Capturing the screen",
+  computer_scroll: "Scrolling",
+  computer_snapshot: "Checking the page",
+  computer_type: "Typing",
+  computer_write_file: "Saving a file",
+};
+
+/** Plain-language label for the fixed activity bar while a tool is running. */
+export function toolActivityLabel(name: string): string {
+  return COMPUTER_ACTIVITY_LABELS[name] ?? readToolName(name).label;
+}
+
 export function readToolName(name: string): ToolName {
   const parts = name.split("__");
   if (parts.length < 3 || parts[0] !== "mcp") return { label: name };

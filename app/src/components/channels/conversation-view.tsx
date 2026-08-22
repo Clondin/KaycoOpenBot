@@ -30,7 +30,7 @@ import {
 } from "@/components/channels/composer";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { readToolName } from "@/lib/plugins/tool-name";
+import { toolActivityLabel } from "@/lib/plugins/tool-name";
 
 export function ConversationView({
   messages,
@@ -304,7 +304,7 @@ export function ConversationView({
     const item = visibleItems[index];
     if (item.kind === "tool") {
       if (item.result === undefined) {
-        latestAction = readToolName(item.toolCall.function.name).label;
+        latestAction = toolActivityLabel(item.toolCall.function.name);
       }
       break;
     }

@@ -499,6 +499,7 @@ export function ComputerTools() {
         <ActionLine
           failed={didNotWork(outcome)}
           label="Read the page"
+          refused={outcome.refused === true}
           running={status !== "complete"}
         />
       );
@@ -526,10 +527,11 @@ export function ComputerTools() {
           running={status !== "complete"}
           label="Extracted table data"
           detail={
-            didNotWork(outcome)
+            outcome.refused === true || didNotWork(outcome)
               ? outcome.reason
               : `${rows} row${rows === 1 ? "" : "s"} from ${tables.length} table${tables.length === 1 ? "" : "s"}`
           }
+          refused={outcome.refused === true}
           failed={didNotWork(outcome)}
         />
       );
@@ -550,6 +552,7 @@ export function ComputerTools() {
         <ActionLine
           failed={didNotWork(outcome)}
           label="Observed the page"
+          refused={outcome.refused === true}
           running={status !== "complete"}
         />
       );
@@ -570,6 +573,7 @@ export function ComputerTools() {
         <ActionLine
           failed={didNotWork(outcome)}
           label="Checked the page"
+          refused={outcome.refused === true}
           running={status !== "complete"}
         />
       );
