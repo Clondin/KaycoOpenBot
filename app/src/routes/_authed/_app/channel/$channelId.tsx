@@ -11,6 +11,7 @@ import { z } from "zod";
 import { AgentProfile } from "@/components/agents/agent-profile";
 import { ChannelAvatar } from "@/components/channels/avatar";
 import { ChannelChat } from "@/components/channels/channel-chat";
+import { DeploymentPreviewChat } from "@/components/channels/deployment-preview-chat";
 import { ComputerView } from "@/components/computer/computer-view";
 import { useNeedsYou } from "@/components/computer/needs-you";
 import { DetailPanel } from "@/components/layout/detail-panel";
@@ -18,6 +19,7 @@ import { Button } from "@/components/ui/button";
 import { agentListQueryOptions } from "@/lib/agents/queries";
 import { type AgentChannel, channelQueryOptions } from "@/lib/channels/queries";
 import { onComputerActivity } from "@/lib/copilot/computer-activity";
+import { deploymentPreviewEnabled } from "@/lib/deployment-preview";
 
 const chatSearchSchema = z.object({
   settings: z.boolean().optional(),
@@ -98,7 +100,10 @@ function RouteComponent() {
     ? bot
     : channel.data?.agentIds[0];
   /** Needs-you state is rendered by the screen when the screen is already open. */
-  const needsYou = useNeedsYou(agentId, !isWatching);
+  const needsYou = useNeedsYou(
+    agentId,
+    !deploymentPreviewEnabled && !isWatching,
+  );
 
   // Needs-you prompts auto-open the screen because the actionable prompt is rendered there.
   useEffect(() => {
@@ -153,7 +158,11 @@ function RouteComponent() {
       }
     >
       <div className="flex flex-col">
-        <div className="h-12 border-b border-border sticky top-0 flex flex-row items-center justify-between px-3 gap-2">
+        {/*
+         * Frosted on purpose: the transcript scrolls beneath a translucent bar, so the header
+         * stops being a hard band and the conversation keeps its depth as it passes under it.
+         */}
+        <div className="sticky top-0 z-10 flex h-12 flex-row items-center justify-between gap-2 border-border/70 border-b bg-background/70 px-3 backdrop-blur-xl">
           {/* Keyed on the displayed name so cold channel loads animate the resolved name, not the id. */}
           <div className="flex min-w-0 items-center gap-1.5">
             <motion.div
@@ -229,21 +238,23 @@ function RouteComponent() {
             </Button>
             <Button
               aria-label={
-                needsYou
-                  ? "This Bot is waiting for you. Open its screen"
-                  : "Watch this Bot's screen"
+                deploymentPreviewEnabled
+                  ? "Screen unavailable in UI preview"
+                  : needsYou
+                    ? "This Bot is waiting for you. Open its screen"
+                    : "Watch this Bot's screen"
               }
               aria-pressed={isWatching}
               className={`relative ${isWatching ? "bg-foreground/5" : ""}`}
-              disabled={agentId === undefined}
+              disabled={deploymentPreviewEnabled || agentId === undefined}
               onClick={() => show(isWatching ? null : "watch")}
               variant="ghost"
               size="icon"
             >
               <IconDeviceDesktop className="size-4.5" />
-              {/* Mirrors needs-you state outside the hidden screen pane. */}
+              {/* Mirrors needs-you state outside the hidden screen pane; the pulse pulls the eye. */}
               {needsYou ? (
-                <span className="absolute right-1 top-1 size-2 rounded-full bg-amber-500" />
+                <span className="pulse-ring absolute top-1 right-1 size-2 rounded-full bg-amber-500" />
               ) : null}
             </Button>
             <Button
@@ -310,6 +321,10 @@ function ChannelBody({
         This Workroom has no available responder.
       </p>
     );
+  }
+
+  if (deploymentPreviewEnabled) {
+    return <DeploymentPreviewChat channel={channel} />;
   }
 
   // Remount on channel changes so CopilotKit agent/thread state cannot leak between channels.

@@ -12,7 +12,11 @@ import {
   useRef,
   useState,
 } from "react";
-import { searchableMessageIds } from "@/components/channels/chat-messages";
+import {
+  searchableMessageIds,
+  toVisibleChatItems,
+} from "@/components/channels/chat-messages";
+import { AgentActivityBar } from "@/components/channels/activity-bar";
 import { ChatTranscript } from "@/components/channels/chat-transcript";
 import {
   type AgentOption,
@@ -26,6 +30,7 @@ import {
 } from "@/components/channels/composer";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { readToolName } from "@/lib/plugins/tool-name";
 
 export function ConversationView({
   messages,
@@ -284,6 +289,27 @@ export function ConversationView({
     });
   }, [apply, disabled, inFlight]);
 
+  /*
+   * What the activity bar says the Bot is doing right now.
+   *
+   * Rebuilt per render ON PURPOSE — `toVisibleChatItems` is a flatMap over messages, the same cheap
+   * projection ChatTranscript runs every render. The LAST tool item is the freshest thing the Bot
+   * was seen doing, and only while its result is still missing does its humanised name become the
+   * bar's label; once a result lands the Bot is between steps, and naming the finished step would
+   * read as stuck, so the label falls back to plain thinking.
+   */
+  const visibleItems = toVisibleChatItems(messages);
+  let latestAction: string | undefined;
+  for (let index = visibleItems.length - 1; index >= 0; index -= 1) {
+    const item = visibleItems[index];
+    if (item.kind === "tool") {
+      if (item.result === undefined) {
+        latestAction = readToolName(item.toolCall.function.name).label;
+      }
+      break;
+    }
+  }
+
   return (
     <div className="flex flex-col flex-1 min-h-0">
       <div className="flex flex-1 min-h-0">
@@ -322,6 +348,13 @@ export function ConversationView({
         />
       </div>
       <div className="max-w-2xl mx-auto w-full px-0 pb-4 shrink-0">
+        {/*
+         * The persistent account of the turn in flight. Sits ABOVE the composer, outside the
+         * scroller, so it stays on screen wherever the transcript is scrolled — the transcript's
+         * own thinking line covers the person watching the end of the thread; this covers everybody
+         * else.
+         */}
+        <AgentActivityBar active={inFlight} actionLabel={latestAction} />
         {searchOpen ? (
           <div className="mb-2 flex items-center gap-1 rounded-xl border bg-card p-1.5 shadow-sm">
             <IconSearch className="ml-1 size-4 shrink-0 text-muted-foreground" />

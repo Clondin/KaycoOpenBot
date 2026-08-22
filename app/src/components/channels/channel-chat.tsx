@@ -60,20 +60,52 @@ function EmptyConversation({
   title?: string | undefined;
 }) {
   return (
-    <div className="flex flex-col items-center gap-3 py-16 text-center">
-      <span aria-hidden className="size-12 overflow-hidden rounded-full">
-        <Avatar className="size-full" name={agentId} size={48} />
+    <div className="relative flex flex-col items-center gap-4 py-16 text-center">
+      {/*
+       * A faint pool of light behind the face. Foreground-derived rather than a fixed hue, so it
+       * stays monochrome in both themes and reads as depth rather than decoration.
+       */}
+      <span
+        aria-hidden
+        className="pointer-events-none absolute top-6 size-44 rounded-full bg-[radial-gradient(closest-side,var(--foreground),transparent)] opacity-[0.07] blur-2xl"
+      />
+      <span
+        aria-hidden
+        className="relative size-14 overflow-hidden rounded-full shadow-sm ring-1 ring-foreground/10"
+      >
+        <Avatar className="size-full" name={agentId} size={56} />
       </span>
-      <div>
-        <p className="font-medium text-sm">{name}</p>
+      <div className="relative flex flex-col items-center gap-0.5">
+        <p className="font-medium text-base tracking-tight">{name}</p>
         {title ? (
           <p className="text-muted-foreground text-xs">{title}</p>
         ) : null}
+        <p className="max-w-sm pt-2 text-balance text-muted-foreground text-sm">
+          Ask anything below. Attach files, invoke a skill, and stop a running
+          answer at any time.
+        </p>
       </div>
-      <p className="max-w-sm text-muted-foreground text-sm">
-        Ask anything below. Attach files with the + button, invoke a skill with
-        /, and stop a running answer at any time.
-      </p>
+      {/* The composer's grammar, where the person is looking before they have learned it. */}
+      <ul className="relative flex flex-wrap items-center justify-center gap-x-3 gap-y-1.5 text-muted-foreground text-xs">
+        <li className="inline-flex items-center gap-1.5">
+          <kbd className="rounded-md border border-border bg-muted/60 px-1.5 py-0.5 font-mono text-[11px] leading-none text-foreground/70">
+            /
+          </kbd>
+          skills
+        </li>
+        <li className="inline-flex items-center gap-1.5">
+          <kbd className="rounded-md border border-border bg-muted/60 px-1.5 py-0.5 font-mono text-[11px] leading-none text-foreground/70">
+            @
+          </kbd>
+          mention
+        </li>
+        <li className="inline-flex items-center gap-1.5">
+          <kbd className="rounded-md border border-border bg-muted/60 px-1.5 py-0.5 font-mono text-[11px] leading-none text-foreground/70">
+            +
+          </kbd>
+          attach files
+        </li>
+      </ul>
     </div>
   );
 }
