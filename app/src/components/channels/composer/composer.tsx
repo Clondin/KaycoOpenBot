@@ -135,7 +135,7 @@ function AttachmentChips({
     >
       {attachments.map((attachment) => (
         <li
-          className="inline-flex max-w-full items-center gap-1 rounded-md bg-muted px-2 py-1 text-xs"
+          className="inline-flex max-w-full items-center gap-1 rounded-lg border border-border/60 bg-muted/60 px-2 py-1 text-xs"
           key={attachment.id}
         >
           <IconPaperclip className="size-3 shrink-0" />
@@ -427,7 +427,8 @@ export function Composer({
   );
 
   const dropOverlay = draggingFiles ? (
-    <div className="pointer-events-none absolute inset-1 z-10 flex items-center justify-center rounded-xl border border-dashed border-primary bg-card/95 text-sm font-medium text-primary">
+    <div className="pointer-events-none absolute inset-1 z-10 flex items-center justify-center gap-2 rounded-xl border border-dashed border-primary bg-card/80 text-sm font-medium text-primary backdrop-blur-sm">
+      <IconPaperclip className="size-4" />
       Drop files to attach
     </div>
   ) : null;
@@ -452,9 +453,13 @@ export function Composer({
            * It goes outside the editor because the editor scrolls internally at
            * COMPACT_MAX_HEIGHT_PX: padding inside that box would scroll away with the text, so the
            * first visible line would still touch the top edge on a long message.
+           *
+           * FOCUS RAISES THE SURFACE, NOT A COLOURED RING. A four-layer soft halo plus a slightly
+           * darker border reads as the field coming forward; a saturated ring on a monochrome app
+           * reads as an error state.
            */
-          "relative flex min-h-14 flex-col rounded-2xl border border-border bg-card transition-colors focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50",
-          draggingFiles && "border-primary bg-primary/5 ring-3 ring-primary/15",
+          "relative flex min-h-14 flex-col rounded-2xl border border-border bg-card shadow-xs transition-[border-color,box-shadow] duration-200 ease-out focus-within:border-foreground/25 focus-within:shadow-md focus-within:ring-4 focus-within:ring-foreground/[0.04]",
+          draggingFiles && "border-primary bg-primary/5 ring-4 ring-primary/10",
           className,
         )}
         onSubmit={handleFormSubmit}
@@ -494,7 +499,7 @@ export function Composer({
           {canStop ? (
             <Button
               aria-label="Stop the Bot"
-              className="size-8 rounded-full p-0"
+              className="size-8 rounded-full bg-destructive p-0 text-white transition-all duration-150 hover:bg-destructive/90 hover:text-white active:scale-90"
               data-testid="composer-stop"
               onClick={onStop}
               size="icon"
@@ -505,7 +510,7 @@ export function Composer({
           ) : (
             <Button
               aria-label={sendLabel}
-              className="size-8 rounded-full p-0"
+              className="size-8 rounded-full p-0 shadow-sm transition-all duration-150 hover:-translate-y-px hover:shadow-md active:translate-y-0 active:scale-90"
               disabled={!canSend}
               size="icon"
               type="submit"
@@ -525,8 +530,8 @@ export function Composer({
       <form
         aria-busy={isBusy}
         className={cn(
-          "relative overflow-hidden rounded-2xl border border-border bg-card transition-colors",
-          draggingFiles && "border-primary bg-primary/5 ring-3 ring-primary/15",
+          "relative overflow-hidden rounded-2xl border border-border bg-card shadow-xs transition-[border-color,box-shadow] duration-200 ease-out focus-within:border-foreground/25 focus-within:shadow-md focus-within:ring-4 focus-within:ring-foreground/[0.04]",
+          draggingFiles && "border-primary bg-primary/5 ring-4 ring-primary/10",
         )}
         onSubmit={handleFormSubmit}
         {...dragProps}
@@ -571,7 +576,7 @@ export function Composer({
             {canStop ? (
               <Button
                 aria-label="Stop the Bot"
-                className="size-7 rounded-full bg-primary p-0"
+                className="size-7 rounded-full bg-destructive p-0 text-white transition-all duration-150 hover:bg-destructive/90 hover:text-white active:scale-90"
                 data-testid="composer-stop"
                 onClick={onStop}
                 type="button"
@@ -581,7 +586,7 @@ export function Composer({
             ) : (
               <Button
                 aria-label={sendLabel}
-                className="size-7 rounded-full bg-primary p-0 disabled:cursor-not-allowed disabled:opacity-50"
+                className="size-7 rounded-full bg-primary p-0 shadow-sm transition-all duration-150 hover:-translate-y-px hover:shadow-md active:translate-y-0 active:scale-90 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0 disabled:hover:shadow-sm"
                 disabled={!canSend}
                 type="submit"
               >

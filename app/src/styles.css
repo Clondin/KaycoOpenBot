@@ -18,56 +18,62 @@ html {
   font-size: 15px;
 }
 
+/*
+ * The neutral scale carries a faint cool cast (chroma ~0.004–0.01 around hue 250). It still reads
+ * as grayscale — `--primary` stays monochrome by design — but pure-zero grays sit slightly green
+ * against backlit screens, and the blue-leaning tint is what makes surfaces read as calm and
+ * expensive rather than flat.
+ */
 :root {
-  --background: oklch(0.985 0 0);
-  --foreground: oklch(0.145 0 0);
+  --background: oklch(0.988 0.0026 247);
+  --foreground: oklch(0.152 0.009 252);
   --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
+  --card-foreground: oklch(0.152 0.009 252);
   --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
+  --popover-foreground: oklch(0.152 0.009 252);
+  --primary: oklch(0.205 0.008 252);
   --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.96 0 0);
-  --muted-foreground: oklch(0.5 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
+  --secondary: oklch(0.967 0.0034 248);
+  --secondary-foreground: oklch(0.205 0.008 252);
+  --muted: oklch(0.962 0.0038 248);
+  --muted-foreground: oklch(0.515 0.0105 252);
+  --accent: oklch(0.962 0.0038 248);
+  --accent-foreground: oklch(0.205 0.008 252);
   --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
+  --border: oklch(0.916 0.0052 250);
+  --input: oklch(0.908 0.0056 250);
+  --ring: oklch(0.556 0.008 253);
   --chart-1: oklch(0.87 0 0);
   --chart-2: oklch(0.556 0 0);
   --chart-3: oklch(0.439 0 0);
   --chart-4: oklch(0.371 0 0);
   --chart-5: oklch(0.269 0 0);
-  --radius: 0.55rem;
-  --sidebar: oklch(0.97 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
-  --sidebar-primary-foreground: oklch(0.5 0 0);
-  --sidebar-accent: oklch(0.95 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
+  --radius: 0.6rem;
+  --sidebar: oklch(0.971 0.0032 248);
+  --sidebar-foreground: oklch(0.152 0.009 252);
+  --sidebar-primary: oklch(0.205 0.008 252);
+  --sidebar-primary-foreground: oklch(0.515 0.0105 252);
+  --sidebar-accent: oklch(0.947 0.0042 248);
+  --sidebar-accent-foreground: oklch(0.205 0.008 252);
+  --sidebar-border: oklch(0.916 0.0052 250);
+  --sidebar-ring: oklch(0.556 0.008 253);
 }
 
 .dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
+  --background: oklch(0.148 0.007 256);
+  --foreground: oklch(0.982 0.0025 250);
+  --card: oklch(0.196 0.008 257);
+  --card-foreground: oklch(0.982 0.0025 250);
+  --popover: oklch(0.21 0.008 257);
+  --popover-foreground: oklch(0.982 0.0025 250);
+  --primary: oklch(0.92 0.004 250);
+  --primary-foreground: oklch(0.205 0.008 252);
+  --secondary: oklch(0.262 0.008 257);
+  --secondary-foreground: oklch(0.982 0.0025 250);
+  --muted: oklch(0.262 0.008 257);
+  --muted-foreground: oklch(0.712 0.011 253);
+  --accent: oklch(0.262 0.008 257);
+  --accent-foreground: oklch(0.982 0.0025 250);
   --destructive: oklch(0.704 0.191 22.216);
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
@@ -77,12 +83,12 @@ html {
   --chart-3: oklch(0.439 0 0);
   --chart-4: oklch(0.371 0 0);
   --chart-5: oklch(0.269 0 0);
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar: oklch(0.176 0.008 257);
+  --sidebar-foreground: oklch(0.982 0.0025 250);
   --sidebar-primary: oklch(0.488 0.243 264.376);
   --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.262 0.008 257);
+  --sidebar-accent-foreground: oklch(0.982 0.0025 250);
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.556 0 0);
 }
@@ -169,8 +175,12 @@ body {
     @apply font-sans;
   }
 
+  ::selection {
+    background-color: color-mix(in oklab, var(--foreground) 12%, transparent);
+  }
+
   ::-webkit-scrollbar {
-    width: 5px;
+    width: 8px;
   }
 
   ::-webkit-scrollbar-track {
@@ -178,13 +188,21 @@ body {
   }
 
   ::-webkit-scrollbar-thumb {
-    background: var(--border);
-    border-radius: 5px;
+    background: color-mix(in oklab, var(--border) 72%, transparent);
+    border-radius: 9999px;
+    background-clip: padding-box;
+    border: 2px solid transparent;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: color-mix(in oklab, var(--muted-foreground) 38%, transparent);
+    background-clip: padding-box;
   }
 
   * {
     scrollbar-width: thin;
-    scrollbar-color: var(--border) transparent;
+    scrollbar-color: color-mix(in oklab, var(--border) 72%, transparent)
+      transparent;
   }
 }
 
@@ -192,16 +210,21 @@ body {
  * A tool line that is still running.
  *
  * A light band sweeps left to right across the words. `background-clip: text` with a transparent
- * colour is what confines the gradient to the glyphs, and the band is built from the line's own
- * colour so it reads the same in either theme. Only `background-position` animates, which the
- * compositor handles without laying the text out again on every frame.
+ * colour is what confines the gradient to the glyphs. The band CANNOT be built from `currentColor`:
+ * this element's own colour IS transparent (that is how the clip works), and current-day Chrome
+ * resolves `currentColor` inside the gradient to exactly that — the text vanished whole. The band
+ * therefore reads the muted token directly; every caller draws this state in the muted tone anyway,
+ * and a step's refusal or failure tints the line only once it has finished.
+ *
+ * Only `background-position` animates, which the compositor handles without laying the text out
+ * again on every frame.
  */
 .tool-line-running {
   background-image: linear-gradient(
     100deg,
-    currentColor 40%,
-    color-mix(in oklab, currentColor 25%, transparent) 50%,
-    currentColor 60%
+    var(--muted-foreground) 40%,
+    color-mix(in oklab, var(--muted-foreground) 25%, transparent) 50%,
+    var(--muted-foreground) 60%
   );
   background-size: 250% 100%;
   background-position: 100% 0;
@@ -285,6 +308,64 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .thinking-orb-halo,
   .thinking-orb {
+    animation: none;
+  }
+}
+
+/*
+ * The running-step spinner, drawn before a tool line's label.
+ *
+ * A ring rather than Tabler's loader glyph: the border trick spins on the compositor with no font
+ * metrics involved, scales with the surrounding text colour through `currentColor`, and reads at
+ * 12px where a stroked SVG glyph turns to mush. Reduced motion freezes it into a static ring —
+ * still visibly "not finished", just not animating.
+ */
+.step-spinner {
+  display: inline-block;
+  width: 0.75rem;
+  height: 0.75rem;
+  flex-shrink: 0;
+  border-radius: 9999px;
+  border: 1.5px solid color-mix(in oklab, currentColor 28%, transparent);
+  border-top-color: currentColor;
+  animation: step-spinner-spin 0.8s linear infinite;
+}
+
+@keyframes step-spinner-spin {
+  to {
+    transform: rotate(1turn);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .step-spinner {
+    animation: none;
+  }
+}
+
+/*
+ * The attention dot for "this needs you": a soft amber ring that expands and fades.
+ *
+ * Fixed to the amber of the dot itself (`currentColor` would inherit the button's text colour),
+ * because it exists to pull the eye across the room to a Bot that is blocked on a person. Only
+ * `box-shadow` animates, which stays on the compositor; reduced motion leaves a plain dot.
+ */
+.pulse-ring {
+  animation: pulse-ring 1.8s cubic-bezier(0.23, 1, 0.32, 1) infinite;
+}
+
+@keyframes pulse-ring {
+  0% {
+    box-shadow: 0 0 0 0 oklch(0.77 0.15 79 / 55%);
+  }
+  70%,
+  100% {
+    box-shadow: 0 0 0 5px oklch(0.77 0.15 79 / 0%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pulse-ring {
     animation: none;
   }
 }

@@ -486,7 +486,24 @@ export function ComputerTools() {
       "observation, so use this only when that extract was truncated or you need more page text.",
     parameters: z.object({}),
     handler: async () => callComputer(bot.current, run.current, "/read"),
-    render: () => null,
+    /*
+     * A QUIET LINE, NOT A NULL ONE. These three were registered with `render: () => null`, which
+     * reads as "draw nothing" — but a non-null renderer element still comes back from
+     * `useRenderToolCall`, so the transcript's own fallback never fired and the step drew as a
+     * blank row inside its group: two actions in the summary, one visible line beneath it. Drawing
+     * the step costs one muted line while the run is live, which is the point of watching.
+     */
+    render: ({ result, status }) => {
+      const outcome = outcomeOf(result);
+      return (
+        <ActionLine
+          failed={didNotWork(outcome)}
+          label="Read the page"
+          refused={outcome.refused === true}
+          running={status !== "complete"}
+        />
+      );
+    },
   });
 
   useFrontendTool({
@@ -510,10 +527,11 @@ export function ComputerTools() {
           running={status !== "complete"}
           label="Extracted table data"
           detail={
-            didNotWork(outcome)
+            outcome.refused === true || didNotWork(outcome)
               ? outcome.reason
               : `${rows} row${rows === 1 ? "" : "s"} from ${tables.length} table${tables.length === 1 ? "" : "s"}`
           }
+          refused={outcome.refused === true}
           failed={didNotWork(outcome)}
         />
       );
@@ -528,7 +546,17 @@ export function ComputerTools() {
     parameters: z.object({}),
     handler: async () =>
       callComputer(bot.current, run.current, "/observe", { method: "POST" }),
-    render: () => null,
+    render: ({ result, status }) => {
+      const outcome = outcomeOf(result);
+      return (
+        <ActionLine
+          failed={didNotWork(outcome)}
+          label="Observed the page"
+          refused={outcome.refused === true}
+          running={status !== "complete"}
+        />
+      );
+    },
   });
 
   useFrontendTool({
@@ -539,7 +567,17 @@ export function ComputerTools() {
     parameters: z.object({}),
     handler: async () =>
       callComputer(bot.current, run.current, "/snapshot", { method: "POST" }),
-    render: () => null,
+    render: ({ result, status }) => {
+      const outcome = outcomeOf(result);
+      return (
+        <ActionLine
+          failed={didNotWork(outcome)}
+          label="Checked the page"
+          refused={outcome.refused === true}
+          running={status !== "complete"}
+        />
+      );
+    },
   });
 
   useFrontendTool({

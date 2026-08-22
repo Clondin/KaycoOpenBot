@@ -6,6 +6,7 @@ import {
 import {
   IconBox,
   IconCheck,
+  IconChevronRight,
   IconCopy,
   IconFile,
   IconPencil,
@@ -255,15 +256,15 @@ function Stopped({
   onRetry?: (() => void) | undefined;
 }) {
   return (
-    <p
-      className="flex items-center gap-3 text-destructive text-sm"
+    <div
+      className="flex items-center gap-3 rounded-xl border border-destructive/20 bg-destructive/5 py-2 pr-2 pl-3.5 text-destructive text-sm"
       data-testid="transcript-stopped"
       role="alert"
     >
-      <span>{reason}</span>
+      <span className="min-w-0 flex-1">{reason}</span>
       {onRetry ? (
         <button
-          className="inline-flex shrink-0 items-center gap-1 rounded-md border border-border px-2 py-0.5 text-foreground text-xs hover:bg-muted focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+          className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-border bg-card px-2 py-1 font-medium text-foreground text-xs shadow-xs transition-colors duration-150 hover:bg-muted focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
           onClick={onRetry}
           type="button"
         >
@@ -271,7 +272,7 @@ function Stopped({
           Retry
         </button>
       ) : null}
-    </p>
+    </div>
   );
 }
 
@@ -518,13 +519,15 @@ function TurnHeader({
     <div className="flex items-center gap-2 pt-1 pb-1.5">
       <span
         aria-hidden
-        className="size-5 shrink-0 overflow-hidden rounded-full"
+        className="size-5 shrink-0 overflow-hidden rounded-full ring-1 ring-foreground/10"
       >
         <Avatar className="size-full" name={agentId ?? name} size={20} />
       </span>
-      <span className="font-medium text-foreground text-xs">{name}</span>
+      <span className="font-medium text-foreground text-xs tracking-tight">
+        {name}
+      </span>
       {time !== undefined ? (
-        <span className="text-[11px] text-muted-foreground">
+        <span className="text-[11px] text-muted-foreground/80 tabular-nums">
           {formatTime(time)}
         </span>
       ) : null}
@@ -543,9 +546,17 @@ function DaySeparator({ label }: { label: string }) {
   // rules are decoration and the row claims no ARIA role it cannot fully honour.
   return (
     <div className="flex items-center gap-3 py-1">
-      <span aria-hidden className="h-px flex-1 bg-border" />
-      <span className="text-[11px] text-muted-foreground">{label}</span>
-      <span aria-hidden className="h-px flex-1 bg-border" />
+      <span
+        aria-hidden
+        className="h-px flex-1 bg-gradient-to-r from-transparent to-border"
+      />
+      <span className="font-medium text-[10px] tracking-widest text-muted-foreground/80 uppercase">
+        {label}
+      </span>
+      <span
+        aria-hidden
+        className="h-px flex-1 bg-gradient-to-l from-transparent to-border"
+      />
     </div>
   );
 }
@@ -574,7 +585,7 @@ function MessageActions({
   time?: number | undefined;
 }) {
   const button =
-    "inline-flex items-center gap-1 rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50";
+    "inline-flex items-center gap-1 rounded-md p-1 text-muted-foreground transition-all duration-150 hover:bg-muted hover:text-foreground active:scale-90 focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50";
   return (
     <span
       className={`flex items-center gap-0.5 opacity-0 transition-opacity duration-150 focus-within:opacity-100 group-hover/message:opacity-100 ${
@@ -762,7 +773,18 @@ const TranscriptMessage = memo(
               }
               variant={isUser ? "muted" : "ghost"}
             >
-              <BubbleContent>
+              <BubbleContent
+                /*
+                 * A person's words sit in a slightly softer, roomier shell than the default: the
+                 * extra radius and hairline shadow lift their turns off the canvas just enough to
+                 * read as "what I said" against the Bot's open prose.
+                 */
+                className={
+                  isUser
+                    ? "rounded-2xl border-border/50 px-3.5 py-2.5 shadow-xs"
+                    : undefined
+                }
+              >
                 {isUser ? (
                   // A person's own message is shown exactly as they typed it. Rendering it as markdown
                   // would silently reformat what they said, and an asterisk in a sentence is not
@@ -778,7 +800,7 @@ const TranscriptMessage = memo(
                          * `align-middle` rather than a block: this sits mid-sentence, and a badge that
                          * breaks the line it is in reads as a separate message.
                          */}
-                        <span className="mr-1 inline-flex items-center gap-1 rounded bg-foreground/10 px-1.5 py-0.5 align-middle font-mono text-foreground/80 text-xs">
+                        <span className="mr-1 inline-flex items-center gap-1 rounded-md bg-foreground/[0.08] px-1.5 py-0.5 align-middle font-mono font-medium text-foreground/80 text-xs ring-1 ring-foreground/10">
                           <IconBox className="size-3 shrink-0" />/{invoked.chip}
                         </span>
                         {invoked.rest}
@@ -1146,15 +1168,18 @@ function TranscriptToolGroup({
 
   return (
     <Arriving delay={delay}>
-      <details className="tool-line my-1.5 min-w-0">
-        <summary className="flex cursor-pointer list-none items-baseline gap-1.5">
+      <details className="tool-line group/steps my-1.5 min-w-0">
+        <summary className="-mx-1 flex cursor-pointer list-none items-center gap-1.5 rounded-lg px-1 py-1 transition-colors duration-150 hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40 [&::-webkit-details-marker]:hidden">
           <span
             aria-hidden
-            className="tool-line-chevron shrink-0 text-muted-foreground text-xs transition-transform"
+            className="tool-line-chevron flex shrink-0 items-center text-muted-foreground/70 transition-transform"
           >
-            ▸
+            <IconChevronRight className="size-3" />
           </span>
-          <span className="text-muted-foreground text-sm">
+          <span className="flex size-4 shrink-0 items-center justify-center rounded-full bg-muted font-medium text-[9px] text-muted-foreground tabular-nums">
+            {tools.length}
+          </span>
+          <span className="min-w-0 truncate text-muted-foreground text-sm">
             {toolGroupSummary(tools)}
           </span>
         </summary>
